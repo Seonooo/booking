@@ -19,10 +19,17 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Build (Spring Boot — 나중에 활용)
+# Build (Spring Boot)
 target/
 build/
 *.class
+
+# Gradle
+.gradle/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Spring Initializr 부산물
+HELP.md
 
 # Claude Code local overrides (per-user permissions)
 .claude/settings.local.json
