@@ -31,5 +31,5 @@ ADR-014 헥사고날 매핑 + Architectural Patterns 6개 코드 예시:
 
 ## 현재 상태
 
-- 코드 0 lines
-- 첫 코드 작성 = `python3 scripts/execute.py docs/features/feature-001-*.md --interactive --phase 1`
+- Spring Boot 3.5.14 LTS bootstrap 완료 (`BookingApplication` + 빈 패키지 골격 + `application.yml` 3종 + Flyway placeholder). **도메인 코드 0 lines 유지**.
+- 첫 도메인 코드 작성 = `python3 scripts/execute.py docs/features/feature-001-*.md --interactive --phase 1`
