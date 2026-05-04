@@ -2,7 +2,7 @@
 
 | Status | Owner | Created | Last Updated |
 |---|---|---|---|
-| In-Progress | TBD | 2026-05-04 | 2026-05-04 |
+| Review | TBD | 2026-05-04 | 2026-05-04 |
 
 > **Self-contained 원칙 (ADR-013).** 모든 컨텍스트(REQUIREMENTS / ADR / ERD / 영향 코드 경로 / Pattern 번호)는 본 파일 안에서 인라인. 외부 대화 참조 금지.
 
@@ -68,10 +68,10 @@ Scenario: [edge:concurrency] 재고 10 + 100 동시 요청 → 정확히 10 succ
 
 | # | Scenario | Type | Test Method | File | Status |
 |---|---|---|---|---|---|
-| 1 | 재고 10 → 첫 진입 → 200 + hold key set | happy | `should_decrement_stock_and_set_hold_key_when_purchase_succeeds` | `BookingStockIntegrationTest.java` | RED |
-| 2 | 재고 1 → 진입 성공 | edge:boundary | `should_decrement_stock_to_zero_when_last_one` | `BookingStockIntegrationTest.java` | RED |
-| 3 | 재고 0 → SOLD_OUT 409 | edge:boundary | `should_return_409_sold_out_when_stock_is_zero` | `BookingStockIntegrationTest.java` | RED |
-| 4 | 100 동시 요청 → 10 success / 90 SOLD_OUT, oversell 0 | edge:concurrency | `should_oversell_zero_when_100_concurrent_requests_for_stock_10` | `BookingStockConcurrencyTest.java` | RED |
+| 1 | 재고 10 → 첫 진입 → 200 + hold key set | happy | `should_decrement_stock_and_set_hold_key_when_purchase_succeeds` | `BookingStockIntegrationTest.java` | GREEN |
+| 2 | 재고 1 → 진입 성공 | edge:boundary | `should_decrement_stock_to_zero_when_last_one` | `BookingStockIntegrationTest.java` | GREEN |
+| 3 | 재고 0 → SOLD_OUT 409 | edge:boundary | `should_return_409_sold_out_when_stock_is_zero` | `BookingStockIntegrationTest.java` | GREEN |
+| 4 | 100 동시 요청 → 10 success / 90 SOLD_OUT, oversell 0 | edge:concurrency | `should_oversell_zero_when_100_concurrent_requests_for_stock_10` | `BookingStockConcurrencyTest.java` | GREEN |
 
 **Edge case coverage**: 3/4 (75%) — `[edge:boundary]` ×2, `[edge:concurrency]` ×1. ADR-013 §Edge Case 의무 조항 충족 + ADR-002/008 *동시성 의무 영역* 충족.
 
@@ -332,6 +332,9 @@ ADR-008 amendment §재고 풀림 시 분배 정책 amendment — *"booking COMP
 - 2026-05-04 — Plan populated by main claude (covered ADRs: ADR-002, ADR-007, ADR-008 amendment, ADR-014). `tdd-planner` agent skip — 사용자 *"빠르게"* directive 정합.
 - 2026-05-04 — REQUIREMENTS §1.2 정합 검토로 ADR-008 amendment 트리거 → plan 의 *"PG 실패 → stock release"* 흐름 제거, *"hold 유지 + sweeper out-of-scope"* 모델로 정정.
 - 2026-05-04 — Phase 2 RED done — `BookingStockIntegrationTest` 3 + `BookingStockConcurrencyTest` 1 = 4/4 fail (production 미구현). base class = `IntegrationTestSupport` extend (cache key 정합 — race 없음).
+- 2026-05-04 — Phase 3.1 GREEN done — `StockRepository` (port) + `StockSoldOutException` + `stock_hold.lua` + `StockRedisAdapter` (Resilience4j wrapping). 컴파일 GREEN.
+- 2026-05-04 — Phase 3.2 GREEN done — `BookingService.create()` 단계 3 (tryHold) 통합. SOLD_OUT 시 `idempotencyKeyService.releaseKey` + `StockSoldOutException` throw. `IdempotencyLuaScript.releaseKey` + `IdempotencyKeyService.releaseKey` 추가. `GlobalExceptionHandler` 409 매핑.
+- 2026-05-04 — Phase 3.3 GREEN done — `IntegrationTestSupport.seedAndCleanFixtures` 에 stock=10 seed + hold key cleanup 추가. 4/4 신규 test GREEN + 전체 `./gradlew test` BUILD SUCCESSFUL (회귀 0건).
 
 ---
 
