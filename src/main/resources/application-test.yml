@@ -1,8 +1,10 @@
 spring:
   jpa:
     hibernate:
-      # Hibernate 6 가 CHAR(64) / BINARY(16) 매핑을 VARCHAR / VARBINARY 로 검증
-      # 시도해 fail. Flyway 가 schema 단일 출처 → JPA validate 비활성.
+      # DDL 은 Flyway 가 관리. validate 는 CHAR(64) vs VARCHAR(64) 타입 불일치를
+      # Hibernate 6 의 엄격한 검증으로 실패시킴 (schema: idempotency_key.body_hash CHAR(64),
+      # @Column length=64 → Hibernate 기본 VARCHAR 해석). Flyway 마이그레이션 정합 확인은
+      # @DataJpaTest 슬라이스가 담당.
       ddl-auto: none
   flyway:
     enabled: true
