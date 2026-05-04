@@ -172,19 +172,23 @@ burst window 1~5분간 누적 ~30만 요청 중 성공 가능 = 재고 10개. 99
 
 REQUIREMENTS.md Req 5의 *"결제 실패 대응 로직 + DECISIONS.md 상세 기술"* 요구를 본 절로 충족한다. 결제 실패는 **발생 위치 / 보상 책임 / 사용자 응답**이 모두 다르므로 3종으로 분류해 각각의 흐름을 명시한다.
 
-#### 케이스 1 — PG 거절 (한도 초과 / 카드 정지 / 인증 실패)
+#### 케이스 1 — PG 거절 (한도 초과 / 카드 정지 / 인증 실패) — *amendment 2026-05-04*
 
 ```
 PG.execute() → 거절 응답
 └─ DB 트랜잭션 시작 전이라 보상 불필요
-   └─ 재고 INCR (hold 반납)
-      └─ 사용자 응답: 400 + "결제가 거절되었습니다"
+   └─ stock hold 유지 (사용자 5분 TTL 까지 hold 보존, 재시도 허용)
+      └─ 사용자 응답: 400 + "결제가 거절되었습니다 — 다른 결제 수단으로 재시도 가능"
+         └─ 클라이언트는 새 idempotency-key 로 다른 결제 수단 POST /booking 재호출
+            └─ TTL 5분 만료 시 sweeper 가 stock INCR (booking HOLD row 자동 cleanup)
 ```
 
-- **재고 처리**: 즉시 INCR
-- **멱등성**: 클라이언트 idempotency-key 단위. 동일 키 재시도는 PROCESSING 상태 유지 → 클라이언트 새로고침 후 새 키로 재시도 가능 (ADR-006)
-- **응답**: 400 (도메인 invariant — `docs/CONVENTIONS-CODE.md` §3)
-- **보상 필요 여부**: ❌ 없음
+- **재고 처리**: **hold 유지** (5분 TTL). TTL 만료 시 sweeper 가 INCR (sweeper 구현은 ADR-010 ShedLock 인프라 위에서 진행)
+- **멱등성**: 클라이언트 idempotency-key 단위. 동일 키 재시도는 PROCESSING 상태 유지 → 클라이언트는 **새 idempotency-key 로 다른 결제 수단 재시도** 가능. 같은 hold (사용자 단위) 안에서 재시도 → ADR-008 §재고 풀림 시 분배 정책 amendment 정합.
+- **응답**: 400 (도메인 invariant — `docs/CONVENTIONS-CODE.md` §3) + 응답 메시지에 *"다른 결제 수단 재시도 가능"* 안내
+- **보상 필요 여부**: ❌ 없음 (PG 청구되지 않음)
+
+> **Amendment 사유 (2026-05-04)**: 본 케이스 원안은 *"즉시 INCR + 새로고침 폴링 재참여"* 였으나 `docs/REQUIREMENTS.md` §1.2 *"POST Booking API: 결제를 진행하고 최종 주문을 생성"* 정의 정합 + 산업 관행 (인터파크 / 토스 결제 페이지) 정합으로 *"hold 유지 + 다른 결제 수단 재시도"* 로 정정. 자세한 trade-off 재평가는 `docs/adr/ADR-008-stock-counter.md` §정정 사유 (2026-05-04) 참조.
 
 #### 케이스 2 — PG Timeout (응답 미수신, UNKNOWN)
 
@@ -223,7 +227,7 @@ DB 트랜잭션 → 커밋 실패 (네트워크 / 제약 위반 / Outbox INSERT 
 
 | 케이스 | HTTP 응답 | 재고 처리 | 멱등성 영역 | 보상 |
 |---|---|---|---|---|
-| 1. PG 거절 | 400 | 즉시 INCR | 클라이언트 idempotency-key | 없음 |
+| 1. PG 거절 *(amendment 2026-05-04)* | 400 + 재시도 안내 | **hold 유지 (5분 TTL)** — TTL 만료 sweeper 가 INCR | 클라이언트 idempotency-key (실패 시 새 키로 재시도) | 없음 |
 | 2. PG Timeout | 일시 hold → 결과 push | 6분 후 reconciliation 결과 | PG idempotency key (PaymentAttempt UUID) | 자동 워커 (ADR-011) |
 | 3. DB 커밋 실패 | 500 | Saga 후 INCR | Booking + PG idempotency 동시 | Saga + Outbox 재시도 |
 | (참조) 재고 소진 | 200 SOLD_OUT | N/A | N/A | N/A |
