@@ -72,23 +72,25 @@
 
 ## 4. Open Items (`DECISIONS.md` 보강 필요)
 
-본 요구사항은 **"DECISIONS.md에 기술 / 상세 기술"** 을 명시. 메커니즘은 ADR에 있으나 `DECISIONS.md` 종합 섹션이 부족한 영역:
+> **Status: Resolved.** Gap A·B 모두 `docs/adr/DECISIONS.md` §10 / §11 신설로 해소됨. 본 섹션은 추적용 기록으로 유지한다.
 
-### Gap A — 고가용성 종합 섹션 부재 (Req 2)
+### Gap A — 고가용성 종합 섹션 (Req 2) — ✅ Resolved
 
-- 메커니즘은 ADR-007/005/008 + 결정의 한계 §1에 분산.
-- `DECISIONS.md` 핵심 결정 §10 (또는 §5 확장) 신설 필요:
-  - 다층 방어 (Rate Limit → 재고 카운터 → Bulkhead → Circuit Breaker → Fail-Closed)
-  - TPS burst 흡수 경로
-  - 인스턴스 수평 확장 가정
-- 시스템 환경 요약의 *"1000 TPS burst"* 표현은 **관측 환경 (500~1000 TPS 변동) + 설계 capacity (상한 1000) 두 차원으로 분리** 명시. 본 작업으로 `docs/adr/DECISIONS.md` / `docs/ARCHITECTURE.md` / `.claude/agents/` Project Context 동기화 완료.
+- **메커니즘 출처**: ADR-007 (Sentinel + Resilience4j + Fail-Closed) / ADR-005 (Rate Limit) / ADR-008 (재고 카운터) + 결정의 한계 §1 (수평 확장)
+- **Resolution**: `docs/adr/DECISIONS.md` §10 *고가용성 다층 방어* 신설
+  - 4층 방어 시퀀스: Rate Limit → 재고 카운터 → Bulkhead → Circuit Breaker → Fail-Closed
+  - 인프라 보조: Sentinel HA / 인스턴스 4~5대 수평 확장 / ShedLock 분산 락
+  - TPS burst 흡수 경로 (1000 TPS 상한 → 재고 10개 → 503)
+  - 재검토 트리거 (평시 TPS 200+ / 인스턴스 10대+ / 서킷 OPEN 빈도)
+- **TPS 표현 정합** (별개 항목): 시스템 환경 요약의 *"1000 TPS burst"* 표현은 **관측 환경 (500~1000 TPS 변동) + 설계 capacity (상한 1000) 두 차원으로 분리** 명시. `docs/adr/DECISIONS.md` / `docs/ARCHITECTURE.md` / `.claude/agents/` Project Context 동기화 완료 (PR #3).
 
-### Gap B — 결제 실패 대응 흐름 미정리 (Req 5)
+### Gap B — 결제 실패 흐름 (Req 5) — ✅ Resolved
 
-- ADR-009 Saga에 흐름은 있으나, `DECISIONS.md` §3에는 *"DB 실패 시 PG 취소"* 한 줄뿐.
-- `DECISIONS.md` 핵심 결정 §11 신설 필요:
-  - 결제 실패 분류 3종: PG 거절(한도/거절) / Saga 보상(DB 실패) / Timeout 미결(ADR-011)
-  - 각각의 재고 복구 / 멱등성 / 사용자 응답 흐름
+- **메커니즘 출처**: ADR-009 (Saga 보상) / ADR-010 (Outbox 재시도) / ADR-011 (Reconciliation Worker)
+- **Resolution**: `docs/adr/DECISIONS.md` §11 *결제 실패 분류와 보상 흐름* 신설
+  - 3종 분류: 케이스 1 PG 거절 / 케이스 2 PG Timeout (UNKNOWN) / 케이스 3 DB 커밋 실패
+  - 각 케이스별 재고 처리 / 멱등성 영역 / HTTP 응답 / 보상 책임
+  - 응답 / 재고 / 보상 매핑 표 (실패 3종 + 참조 4종)
 
 ---
 
