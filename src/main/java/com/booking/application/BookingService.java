@@ -25,6 +25,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -81,6 +82,7 @@ public class BookingService {
     private final OutboxEventRepository outboxEventRepository;
     private final ExternalPaymentMethod cardPayment;
     private final StockRepository stockRepository;
+    private final SagaCompensationService sagaCompensationService;
     private final ObjectMapper objectMapper;
     private final TransactionTemplate transactionTemplate;
 
@@ -92,6 +94,7 @@ public class BookingService {
                           OutboxEventRepository outboxEventRepository,
                           ExternalPaymentMethod cardPayment,
                           StockRepository stockRepository,
+                          SagaCompensationService sagaCompensationService,
                           ObjectMapper objectMapper,
                           TransactionTemplate transactionTemplate) {
         this.idempotencyKeyService = idempotencyKeyService;
@@ -102,6 +105,7 @@ public class BookingService {
         this.outboxEventRepository = outboxEventRepository;
         this.cardPayment = cardPayment;
         this.stockRepository = stockRepository;
+        this.sagaCompensationService = sagaCompensationService;
         this.objectMapper = objectMapper;
         this.transactionTemplate = transactionTemplate;
     }
@@ -131,13 +135,10 @@ public class BookingService {
         BookingPgState state = persistInitialState(idempotencyKey, request);
 
         // 단계 5 — PG 호출 (트랜잭션 밖)
+        PaymentResult pgResult;
         try {
-            PaymentResult pgResult = cardPayment.execute(
+            pgResult = cardPayment.execute(
                 new PaymentRequest(request.amount(), state.attemptUuid().toString(), request.userId()));
-            FinalizeOutcome outcome = finalizeSuccess(state, idempotencyKey, request, bodyHash, pgResult);
-            // 트랜잭션 commit 후 Redis idempotency complete (캐시 갱신)
-            idempotencyKeyService.complete(idempotencyKey, bodyHash, outcome.responseJson(), state.bookingId());
-            return BookingFlowResult.fresh(outcome.response());
         } catch (PaymentRejectedException e) {
             finalizeRejected(state);
             idempotencyKeyService.releaseKey(idempotencyKey);
@@ -147,6 +148,27 @@ public class BookingService {
             // idempotency PROCESSING 유지 — Reconciliation worker (feature-007) 가 결과 확정 후
             // push 알림 또는 클라이언트 새로고침 폴링으로 결과 전달.
             throw e;
+        }
+
+        // 단계 6 — DB persist (DECISIONS.md §11 케이스 3 — DB 실패 시 Saga 보상)
+        try {
+            FinalizeOutcome outcome = finalizeSuccess(state, idempotencyKey, request, bodyHash, pgResult);
+            // 트랜잭션 commit 후 Redis idempotency complete (캐시 갱신)
+            idempotencyKeyService.complete(idempotencyKey, bodyHash, outcome.responseJson(), state.bookingId());
+            return BookingFlowResult.fresh(outcome.response());
+        } catch (DataIntegrityViolationException dbEx) {
+            // ★ Saga 보상 (ADR-009 / DECISIONS.md §11 케이스 3) — PG 청구됨 + DB 미생성 → PG cancel + booking FAILED + stock release
+            log.error("[SAGA_COMPENSATION_TRIGGER] bookingId={} externalPaymentId={} message={}",
+                state.bookingId(), pgResult.externalPaymentId(), dbEx.getMessage());
+            try {
+                sagaCompensationService.compensate(
+                    pgResult.externalPaymentId(), request.amount(), state.bookingId());
+            } catch (Exception compEx) {
+                // 보상 실패 — fallback 로깅 (운영자 수동 개입 필요)
+                log.error("[SAGA_COMPENSATION_FAILED] bookingId={} externalPaymentId={} compMessage={}",
+                    state.bookingId(), pgResult.externalPaymentId(), compEx.getMessage(), compEx);
+            }
+            throw dbEx; // GlobalExceptionHandler → 503
         }
     }
 
