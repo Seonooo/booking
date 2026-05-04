@@ -23,6 +23,29 @@ management:
     health:
       show-details: when_authorized
 
+# Resilience4j (ADR-007 §Decision 임계값)
+# - redisOps: 모든 Redis 의존 컴포넌트 공통 인스턴스 (ADR-006 idempotency,
+#   ADR-008 stock counter, ADR-005 rate limit). slow death 감지를 위해
+#   TIME_BASED window + slowCallDuration 1s.
+resilience4j:
+  circuitbreaker:
+    instances:
+      redisOps:
+        sliding-window-type: TIME_BASED
+        sliding-window-size: 5
+        minimum-number-of-calls: 50
+        failure-rate-threshold: 50
+        slow-call-duration-threshold: 1000ms
+        slow-call-rate-threshold: 50
+        wait-duration-in-open-state: 5000ms
+        permitted-number-of-calls-in-half-open-state: 10
+        automatic-transition-from-open-to-half-open-enabled: true
+  bulkhead:
+    instances:
+      redisOps:
+        max-concurrent-calls: 100
+        max-wait-duration: 0ms
+
 logging:
   level:
     com.booking: DEBUG

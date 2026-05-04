@@ -8,8 +8,11 @@ import com.booking.api.booking.dto.CreateBookingRequest;
 import com.booking.domain.idempotency.IdempotencyKey;
 import com.booking.domain.idempotency.IdempotencyKeyRepository;
 import com.booking.domain.idempotency.IdempotencyStatus;
+import com.booking.infrastructure.redis.IdempotencyLuaScript;
+import com.booking.infrastructure.redis.RedisUnavailableException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -24,17 +27,32 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * Unit 테스트 — BodyHashCalculator 정확성 + IdempotencyKeyService 3-state 분기 로직.
- * Mockito로 Repository / Lua adapter 격리.
- * Source: docs/features/feature-001-idempotency-handling.md
+ * Unit 테스트 — BodyHashCalculator 정확성 + IdempotencyKeyService 흐름.
+ *
+ * <p>Service 의존성: {@link IdempotencyLuaScript} (Redis 1차) +
+ * {@link IdempotencyKeyRepository} (DB 2차). Mockito 로 둘 다 격리.
+ *
+ * <p>그룹 구성:
+ * <ul>
+ *   <li>{@code BodyHashCalculatorTests} — Service 무관, 순수 helper 검증</li>
+ *   <li>{@code RedisHappyPath} — Lua 정상 응답을 Service 가 그대로 반환</li>
+ *   <li>{@code DbFallbackBranch} — Redis 장애 시 Repository 기반 DB 2차 분기</li>
+ * </ul>
+ *
+ * <p>Source: docs/features/feature-001-idempotency-handling.md
  */
 @ExtendWith(MockitoExtension.class)
 class IdempotencyKeyServiceTest {
+
+    @Mock
+    private IdempotencyLuaScript luaScript;
 
     @Mock
     private IdempotencyKeyRepository idempotencyKeyRepository;
@@ -42,251 +60,235 @@ class IdempotencyKeyServiceTest {
     @InjectMocks
     private IdempotencyKeyService idempotencyKeyService;
 
-    private BodyHashCalculator bodyHashCalculator;
-
     private static final UUID TEST_KEY = UUID.fromString("550e8400-e29b-41d4-a716-446655440000");
     private static final long USER_ID = 1001L;
     private static final long PRODUCT_ID = 42L;
     private static final BigDecimal AMOUNT = new BigDecimal("50000.00");
 
-    @BeforeEach
-    void setUp() {
-        bodyHashCalculator = new BodyHashCalculator();
+    // =========================================================================
+    // BodyHashCalculator 단위 검증 (ADR-006 §5)
+    // =========================================================================
+
+    @Nested
+    @DisplayName("BodyHashCalculator")
+    class BodyHashCalculatorTests {
+
+        private final BodyHashCalculator bodyHashCalculator = new BodyHashCalculator();
+
+        // Scenario: body_hash는 SHA-256(userId|productId|amount|paymentMethod|points) 64자 hex
+        @Test
+        @Tag("happy")
+        @DisplayName("동일 입력에 동일 64자 hex 반환")
+        void should_return_same_64char_hex_when_same_inputs() {
+            CreateBookingRequest request1 = new CreateBookingRequest(USER_ID, PRODUCT_ID, AMOUNT, "CARD", 0L);
+            CreateBookingRequest request2 = new CreateBookingRequest(USER_ID, PRODUCT_ID, AMOUNT, "CARD", 0L);
+
+            String hash1 = bodyHashCalculator.calculate(request1);
+            String hash2 = bodyHashCalculator.calculate(request2);
+
+            assertThat(hash1).isEqualTo(hash2);
+            assertThat(hash1).hasSize(64).matches("[0-9a-f]{64}");
+        }
+
+        @Test
+        @Tag("happy")
+        @DisplayName("paymentMethod 대소문자 정규화 후 동일 hash")
+        void should_return_same_hash_when_payment_method_case_differs() {
+            CreateBookingRequest lower = new CreateBookingRequest(USER_ID, PRODUCT_ID, AMOUNT, "card", 0L);
+            CreateBookingRequest upper = new CreateBookingRequest(USER_ID, PRODUCT_ID, AMOUNT, "CARD", 0L);
+
+            assertThat(bodyHashCalculator.calculate(lower))
+                .isEqualTo(bodyHashCalculator.calculate(upper));
+        }
+
+        @Test
+        @Tag("edge")
+        @Tag("edge:tampering")
+        @DisplayName("필드 하나 변경 시 다른 hash (| 구분자 ambiguity 방지)")
+        void should_return_different_hash_when_any_field_changes() {
+            CreateBookingRequest original = new CreateBookingRequest(USER_ID, PRODUCT_ID, AMOUNT, "CARD", 0L);
+            CreateBookingRequest differentProduct = new CreateBookingRequest(USER_ID, 99L, AMOUNT, "CARD", 0L);
+            CreateBookingRequest ambig1 = new CreateBookingRequest(1L, 23L, AMOUNT, "CARD", 0L);
+            CreateBookingRequest ambig2 = new CreateBookingRequest(12L, 3L, AMOUNT, "CARD", 0L);
+
+            assertThat(bodyHashCalculator.calculate(original))
+                .isNotEqualTo(bodyHashCalculator.calculate(differentProduct));
+            assertThat(bodyHashCalculator.calculate(ambig1))
+                .isNotEqualTo(bodyHashCalculator.calculate(ambig2));
+        }
+
+        @Test
+        @Tag("happy")
+        @DisplayName("amount toPlainString() 호출로 64자 hex 출력")
+        void should_produce_64char_hex_for_any_BigDecimal_representation() {
+            CreateBookingRequest req1 = new CreateBookingRequest(USER_ID, PRODUCT_ID, new BigDecimal("50000.00"), "CARD", 0L);
+            CreateBookingRequest req2 = new CreateBookingRequest(USER_ID, PRODUCT_ID, new BigDecimal("50000"), "CARD", 0L);
+
+            assertThat(bodyHashCalculator.calculate(req1)).hasSize(64);
+            assertThat(bodyHashCalculator.calculate(req2)).hasSize(64);
+        }
     }
 
     // =========================================================================
-    // BodyHashCalculator 단위 검증 (ADR-006 §5 body hash 알고리즘)
+    // checkAndReserve — Redis 정상 (Lua 결과 위임)
     // =========================================================================
 
-    // Scenario: body_hash는 SHA-256(userId|productId|amount.toPlainString()|paymentMethod.toUpperCase()|points) 64자 hex
-    // Source: docs/features/feature-001-idempotency-handling.md
-    @Test
-    @Tag("happy")
-    @DisplayName("BodyHashCalculator — 동일 입력에 동일 64자 hex 반환")
-    void should_return_same_64char_hex_when_same_inputs() {
-        // Given: 동일한 두 요청 (모든 핵심 필드 동일)
-        CreateBookingRequest request1 = new CreateBookingRequest(
-                USER_ID, PRODUCT_ID, AMOUNT, "CARD", 0L);
-        CreateBookingRequest request2 = new CreateBookingRequest(
-                USER_ID, PRODUCT_ID, AMOUNT, "CARD", 0L);
+    @Nested
+    @DisplayName("checkAndReserve — Redis 정상 → Lua 결과 그대로 반환")
+    class RedisHappyPath {
 
-        // When: 각각 hash 계산
-        String hash1 = bodyHashCalculator.calculate(request1);
-        String hash2 = bodyHashCalculator.calculate(request2);
+        @Test
+        @Tag("happy")
+        @DisplayName("Lua 가 NEW 반환 → Service 도 NEW (Repository 미호출)")
+        void should_return_NEW_when_lua_returns_NEW() {
+            String hash = "a".repeat(64);
+            when(luaScript.execute(eq(TEST_KEY), eq(hash)))
+                .thenReturn(new IdempotencyCheckResult(ResultType.NEW, null));
 
-        // Then: 동일한 64자 소문자 hex
-        assertThat(hash1)
-                .as("두 동일 요청의 body_hash가 일치해야 한다")
-                .isEqualTo(hash2);
-        assertThat(hash1)
-                .as("SHA-256 hex는 정확히 64자여야 한다")
-                .hasSize(64)
-                .matches("[0-9a-f]{64}");
-    }
+            IdempotencyCheckResult result = idempotencyKeyService.checkAndReserve(TEST_KEY, hash);
 
-    // Scenario: paymentMethod 대소문자가 달라도 같은 hash (toUpperCase 정규화)
-    // Source: docs/features/feature-001-idempotency-handling.md
-    @Test
-    @Tag("happy")
-    @DisplayName("BodyHashCalculator — paymentMethod 대소문자 정규화 후 동일 hash")
-    void should_return_same_hash_when_payment_method_case_differs() {
-        // Given: paymentMethod가 대소문자만 다른 두 요청
-        CreateBookingRequest lowerCase = new CreateBookingRequest(
-                USER_ID, PRODUCT_ID, AMOUNT, "card", 0L);
-        CreateBookingRequest upperCase = new CreateBookingRequest(
-                USER_ID, PRODUCT_ID, AMOUNT, "CARD", 0L);
+            assertThat(result.type()).isEqualTo(ResultType.NEW);
+            verify(idempotencyKeyRepository, never()).findById(TEST_KEY);
+        }
 
-        // When
-        String hashLower = bodyHashCalculator.calculate(lowerCase);
-        String hashUpper = bodyHashCalculator.calculate(upperCase);
+        @Test
+        @Tag("happy")
+        @DisplayName("Lua 가 PROCESSING 반환 → Service 도 PROCESSING")
+        void should_return_PROCESSING_when_lua_returns_PROCESSING() {
+            String hash = "b".repeat(64);
+            when(luaScript.execute(eq(TEST_KEY), eq(hash)))
+                .thenReturn(new IdempotencyCheckResult(ResultType.PROCESSING, null));
 
-        // Then: toUpperCase() 정규화로 동일 hash (ADR-006 §5)
-        assertThat(hashLower)
-                .as("대소문자 정규화 후 hash가 동일해야 한다")
-                .isEqualTo(hashUpper);
-    }
+            IdempotencyCheckResult result = idempotencyKeyService.checkAndReserve(TEST_KEY, hash);
 
-    // Scenario: 핵심 필드 중 하나만 달라도 다른 hash (|구분자로 ambiguity 방지)
-    // Source: docs/features/feature-001-idempotency-handling.md
-    @Test
-    @Tag("edge")
-    @Tag("edge:tampering")
-    @DisplayName("BodyHashCalculator — 필드 하나 변경 시 다른 hash 반환 (|구분자 ambiguity 방지)")
-    void should_return_different_hash_when_any_field_changes() {
-        // Given: 기준 요청 + productId만 다른 요청
-        CreateBookingRequest original = new CreateBookingRequest(
-                USER_ID, PRODUCT_ID, AMOUNT, "CARD", 0L);
-        CreateBookingRequest differentProduct = new CreateBookingRequest(
-                USER_ID, 99L, AMOUNT, "CARD", 0L);
-        // userId=1, productId=23 vs userId=12, productId=3 — ambiguity 방지 검증
-        CreateBookingRequest ambiguityCase1 = new CreateBookingRequest(
-                1L, 23L, AMOUNT, "CARD", 0L);
-        CreateBookingRequest ambiguityCase2 = new CreateBookingRequest(
-                12L, 3L, AMOUNT, "CARD", 0L);
+            assertThat(result.type()).isEqualTo(ResultType.PROCESSING);
+            verify(idempotencyKeyRepository, never()).findById(TEST_KEY);
+        }
 
-        // When
-        String hashOriginal = bodyHashCalculator.calculate(original);
-        String hashDiffProduct = bodyHashCalculator.calculate(differentProduct);
-        String hashAmbig1 = bodyHashCalculator.calculate(ambiguityCase1);
-        String hashAmbig2 = bodyHashCalculator.calculate(ambiguityCase2);
+        @Test
+        @Tag("happy")
+        @DisplayName("Lua 가 COMPLETED+cached 반환 → Service 도 그대로")
+        void should_return_COMPLETED_with_cached_when_lua_returns_COMPLETED() {
+            String hash = "c".repeat(64);
+            String cached = "{\"bookingId\":999}";
+            when(luaScript.execute(eq(TEST_KEY), eq(hash)))
+                .thenReturn(new IdempotencyCheckResult(ResultType.COMPLETED, cached));
 
-        // Then: 다른 hash (| 구분자가 ambiguity 제거)
-        assertThat(hashOriginal)
-                .as("productId가 다르면 hash가 달라야 한다")
-                .isNotEqualTo(hashDiffProduct);
-        assertThat(hashAmbig1)
-                .as("userId=1|productId=23 과 userId=12|productId=3 은 hash가 달라야 한다")
-                .isNotEqualTo(hashAmbig2);
-    }
+            IdempotencyCheckResult result = idempotencyKeyService.checkAndReserve(TEST_KEY, hash);
 
-    // Scenario: amount toPlainString() — 지수 표기(1E+5) 방지로 동일 값 동일 hash
-    // Source: docs/features/feature-001-idempotency-handling.md
-    @Test
-    @Tag("happy")
-    @DisplayName("BodyHashCalculator — amount toPlainString() 정규화로 동일 값 동일 hash")
-    void should_produce_same_hash_for_equivalent_amount_representations() {
-        // Given: 동일한 숫자지만 다른 BigDecimal 표기
-        CreateBookingRequest req1 = new CreateBookingRequest(
-                USER_ID, PRODUCT_ID, new BigDecimal("50000.00"), "CARD", 0L);
-        CreateBookingRequest req2 = new CreateBookingRequest(
-                USER_ID, PRODUCT_ID, new BigDecimal("50000"), "CARD", 0L);
+            assertThat(result.type()).isEqualTo(ResultType.COMPLETED);
+            assertThat(result.cachedResponse()).isEqualTo(cached);
+        }
 
-        // When
-        String hash1 = bodyHashCalculator.calculate(req1);
-        String hash2 = bodyHashCalculator.calculate(req2);
+        @Test
+        @Tag("edge")
+        @Tag("edge:tampering")
+        @DisplayName("Lua 가 HASH_MISMATCH 반환 → Service 도 HASH_MISMATCH")
+        void should_return_HASH_MISMATCH_when_lua_returns_HASH_MISMATCH() {
+            String hash = "d".repeat(64);
+            when(luaScript.execute(eq(TEST_KEY), eq(hash)))
+                .thenReturn(new IdempotencyCheckResult(ResultType.HASH_MISMATCH, null));
 
-        // Then: toPlainString()은 "50000.00" vs "50000" — 다를 수 있으므로 일관성만 검증
-        // 이 테스트는 toPlainString() 호출을 강제하여 1E+5 같은 지수 표기를 방지함을 검증
-        assertThat(hash1)
-                .as("hash 결과는 null이 아니고 64자 hex여야 한다")
-                .isNotNull()
-                .hasSize(64);
-        assertThat(hash2)
-                .as("hash 결과는 null이 아니고 64자 hex여야 한다")
-                .isNotNull()
-                .hasSize(64);
+            IdempotencyCheckResult result = idempotencyKeyService.checkAndReserve(TEST_KEY, hash);
+
+            assertThat(result.type()).isEqualTo(ResultType.HASH_MISMATCH);
+        }
     }
 
     // =========================================================================
-    // IdempotencyKeyService 3-state 분기 로직 (ADR-006 §흐름)
+    // checkAndReserve — Redis 장애 → DB 2차 fallback
     // =========================================================================
 
-    // Scenario: 신규 키 → NEW 반환
-    // Source: docs/features/feature-001-idempotency-handling.md
-    @Test
-    @Tag("happy")
-    @DisplayName("checkAndReserve — 신규 키 → ResultType.NEW 반환")
-    void should_return_NEW_when_key_does_not_exist() {
-        // Given: Repository에 키가 없는 상태
-        when(idempotencyKeyRepository.findById(TEST_KEY)).thenReturn(Optional.empty());
-        String bodyHash = "a".repeat(64);
+    @Nested
+    @DisplayName("checkAndReserve — Redis 장애 → Repository 기반 DB 2차 분기")
+    class DbFallbackBranch {
 
-        // When
-        IdempotencyCheckResult result = idempotencyKeyService.checkAndReserve(TEST_KEY, bodyHash);
+        @BeforeEach
+        void redisDown() {
+            when(luaScript.execute(eq(TEST_KEY), anyString()))
+                .thenThrow(new RedisUnavailableException("CB OPEN", null));
+        }
 
-        // Then: NEW 반환 (처리 계속 진행)
-        assertThat(result.type())
-                .as("키가 없으면 NEW 반환")
-                .isEqualTo(ResultType.NEW);
-        assertThat(result.cachedResponse())
-                .as("NEW 상태에서 cachedResponse는 null")
-                .isNull();
-    }
+        @Test
+        @Tag("edge")
+        @Tag("edge:failure")
+        @DisplayName("DB 에 키 없음 → NEW")
+        void should_return_NEW_when_db_finds_no_key() {
+            when(idempotencyKeyRepository.findById(TEST_KEY)).thenReturn(Optional.empty());
 
-    // Scenario: PROCESSING 상태 + 같은 body_hash → PROCESSING 반환
-    // Source: docs/features/feature-001-idempotency-handling.md
-    @Test
-    @Tag("happy")
-    @DisplayName("checkAndReserve — PROCESSING 상태 + 같은 body_hash → ResultType.PROCESSING 반환")
-    void should_return_PROCESSING_when_key_is_processing_with_same_hash() {
-        // Given: PROCESSING 상태 키가 존재
-        String bodyHash = "b".repeat(64);
-        IdempotencyKey processingKey = new IdempotencyKey(
-                TEST_KEY, USER_ID, bodyHash, IdempotencyStatus.PROCESSING,
+            IdempotencyCheckResult result = idempotencyKeyService.checkAndReserve(TEST_KEY, "a".repeat(64));
+
+            assertThat(result.type()).isEqualTo(ResultType.NEW);
+            assertThat(result.cachedResponse()).isNull();
+        }
+
+        @Test
+        @Tag("edge")
+        @Tag("edge:failure")
+        @DisplayName("DB 에 PROCESSING + 같은 hash → PROCESSING")
+        void should_return_PROCESSING_when_db_has_processing_with_same_hash() {
+            String hash = "b".repeat(64);
+            IdempotencyKey existing = new IdempotencyKey(
+                TEST_KEY, USER_ID, hash, IdempotencyStatus.PROCESSING,
                 null, null, Instant.now(), Instant.now().plus(15, ChronoUnit.MINUTES));
-        when(idempotencyKeyRepository.findById(TEST_KEY)).thenReturn(Optional.of(processingKey));
+            when(idempotencyKeyRepository.findById(TEST_KEY)).thenReturn(Optional.of(existing));
 
-        // When
-        IdempotencyCheckResult result = idempotencyKeyService.checkAndReserve(TEST_KEY, bodyHash);
+            IdempotencyCheckResult result = idempotencyKeyService.checkAndReserve(TEST_KEY, hash);
 
-        // Then: PROCESSING 반환 → 409 Conflict
-        assertThat(result.type())
-                .as("PROCESSING 상태 + 같은 hash → PROCESSING 반환")
-                .isEqualTo(ResultType.PROCESSING);
-    }
+            assertThat(result.type()).isEqualTo(ResultType.PROCESSING);
+        }
 
-    // Scenario: COMPLETED 상태 + 같은 body_hash → COMPLETED + cachedResponse 반환
-    // Source: docs/features/feature-001-idempotency-handling.md
-    @Test
-    @Tag("happy")
-    @DisplayName("checkAndReserve — COMPLETED 상태 + 같은 body_hash → ResultType.COMPLETED + cachedResponse 반환")
-    void should_return_COMPLETED_with_cached_response_when_key_is_completed_with_same_hash() {
-        // Given: COMPLETED 상태 키 + response_payload 캐시됨
-        String bodyHash = "c".repeat(64);
-        String cachedResponse = "{\"bookingId\":999,\"status\":\"COMPLETED\"}";
-        IdempotencyKey completedKey = new IdempotencyKey(
-                TEST_KEY, USER_ID, bodyHash, IdempotencyStatus.COMPLETED,
-                cachedResponse, 999L, Instant.now(), Instant.now().plus(15, ChronoUnit.MINUTES));
-        when(idempotencyKeyRepository.findById(TEST_KEY)).thenReturn(Optional.of(completedKey));
+        @Test
+        @Tag("edge")
+        @Tag("edge:failure")
+        @DisplayName("DB 에 COMPLETED + 같은 hash → COMPLETED + cachedResponse")
+        void should_return_COMPLETED_with_cached_when_db_has_completed_with_same_hash() {
+            String hash = "c".repeat(64);
+            String cached = "{\"bookingId\":999,\"status\":\"COMPLETED\"}";
+            IdempotencyKey existing = new IdempotencyKey(
+                TEST_KEY, USER_ID, hash, IdempotencyStatus.COMPLETED,
+                cached, 999L, Instant.now(), Instant.now().plus(15, ChronoUnit.MINUTES));
+            when(idempotencyKeyRepository.findById(TEST_KEY)).thenReturn(Optional.of(existing));
 
-        // When
-        IdempotencyCheckResult result = idempotencyKeyService.checkAndReserve(TEST_KEY, bodyHash);
+            IdempotencyCheckResult result = idempotencyKeyService.checkAndReserve(TEST_KEY, hash);
 
-        // Then: COMPLETED + cachedResponse 반환 → 200 OK (캐시 응답)
-        assertThat(result.type())
-                .as("COMPLETED + 같은 hash → COMPLETED 반환")
-                .isEqualTo(ResultType.COMPLETED);
-        assertThat(result.cachedResponse())
-                .as("COMPLETED 상태에서 cachedResponse가 반환돼야 한다")
-                .isEqualTo(cachedResponse);
-    }
+            assertThat(result.type()).isEqualTo(ResultType.COMPLETED);
+            assertThat(result.cachedResponse()).isEqualTo(cached);
+        }
 
-    // Scenario: 어떤 상태든 + 다른 body_hash → HASH_MISMATCH 반환
-    // Source: docs/features/feature-001-idempotency-handling.md
-    @Test
-    @Tag("edge")
-    @Tag("edge:tampering")
-    @DisplayName("checkAndReserve — 다른 body_hash → ResultType.HASH_MISMATCH 반환")
-    void should_return_HASH_MISMATCH_when_body_hash_differs() {
-        // Given: PROCESSING 상태 키가 있고 storedHash != incomingHash
-        String storedHash = "d".repeat(64);
-        String incomingHash = "e".repeat(64);
-        IdempotencyKey existingKey = new IdempotencyKey(
-                TEST_KEY, USER_ID, storedHash, IdempotencyStatus.PROCESSING,
+        @Test
+        @Tag("edge")
+        @Tag("edge:tampering")
+        @DisplayName("DB 에 다른 hash → HASH_MISMATCH (DB 2차 방어선이 차단)")
+        void should_return_HASH_MISMATCH_when_db_has_different_hash() {
+            String stored = "d".repeat(64);
+            String incoming = "e".repeat(64);
+            IdempotencyKey existing = new IdempotencyKey(
+                TEST_KEY, USER_ID, stored, IdempotencyStatus.PROCESSING,
                 null, null, Instant.now(), Instant.now().plus(15, ChronoUnit.MINUTES));
-        when(idempotencyKeyRepository.findById(TEST_KEY)).thenReturn(Optional.of(existingKey));
+            when(idempotencyKeyRepository.findById(TEST_KEY)).thenReturn(Optional.of(existing));
 
-        // When
-        IdempotencyCheckResult result = idempotencyKeyService.checkAndReserve(TEST_KEY, incomingHash);
+            IdempotencyCheckResult result = idempotencyKeyService.checkAndReserve(TEST_KEY, incoming);
 
-        // Then: HASH_MISMATCH 반환 → 422 Unprocessable Entity
-        assertThat(result.type())
-                .as("body_hash 불일치 → HASH_MISMATCH 반환")
-                .isEqualTo(ResultType.HASH_MISMATCH);
-    }
+            assertThat(result.type()).isEqualTo(ResultType.HASH_MISMATCH);
+        }
 
-    // Scenario: 만료된 키 (isExpired) → NEW로 처리 (새 결제)
-    // Source: docs/features/feature-001-idempotency-handling.md
-    @Test
-    @Tag("edge")
-    @Tag("edge:expiry")
-    @DisplayName("checkAndReserve — TTL 만료된 키 → ResultType.NEW 반환 (새 결제)")
-    void should_return_NEW_when_key_is_expired() {
-        // Given: 16분 전에 만료된 키
-        String bodyHash = "f".repeat(64);
-        IdempotencyKey expiredKey = new IdempotencyKey(
-                TEST_KEY, USER_ID, bodyHash, IdempotencyStatus.PROCESSING,
+        @Test
+        @Tag("edge")
+        @Tag("edge:expiry")
+        @DisplayName("DB 에 expired 키 → NEW (만료 키는 새 결제)")
+        void should_return_NEW_when_db_has_expired_key() {
+            String hash = "f".repeat(64);
+            IdempotencyKey expired = new IdempotencyKey(
+                TEST_KEY, USER_ID, hash, IdempotencyStatus.PROCESSING,
                 null, null,
                 Instant.now().minus(16, ChronoUnit.MINUTES),
-                Instant.now().minus(1, ChronoUnit.MINUTES)); // expiresAt이 과거
-        when(idempotencyKeyRepository.findById(TEST_KEY)).thenReturn(Optional.of(expiredKey));
+                Instant.now().minus(1, ChronoUnit.MINUTES));
+            when(idempotencyKeyRepository.findById(TEST_KEY)).thenReturn(Optional.of(expired));
 
-        // When
-        IdempotencyCheckResult result = idempotencyKeyService.checkAndReserve(TEST_KEY, bodyHash);
+            IdempotencyCheckResult result = idempotencyKeyService.checkAndReserve(TEST_KEY, hash);
 
-        // Then: 만료된 키는 신규로 처리 → NEW 반환
-        assertThat(result.type())
-                .as("만료된 키는 NEW로 처리해야 한다")
-                .isEqualTo(ResultType.NEW);
+            assertThat(result.type()).isEqualTo(ResultType.NEW);
+        }
     }
 }

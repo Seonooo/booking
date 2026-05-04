@@ -3,39 +3,55 @@ package com.booking.application;
 import com.booking.application.IdempotencyCheckResult.ResultType;
 import com.booking.domain.idempotency.IdempotencyKey;
 import com.booking.domain.idempotency.IdempotencyKeyRepository;
+import com.booking.infrastructure.redis.IdempotencyLuaScript;
+import com.booking.infrastructure.redis.RedisUnavailableException;
 
 import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 
 /**
- * 멱등성 체크 + 3-state 분기 application service (ADR-006).
+ * 멱등성 체크 application service (ADR-006).
  *
- * <p>본 phase (3.2) 는 Repository (DB 영속) 단일 계층만 다룬다. Redis Lua 1차
- * 캐시 (ADR-002 atomic SETNX, ADR-007 Fail-Closed) 는 Phase 3.3 에서
- * {@code IdempotencyLuaScript} 가 추가될 때 통합한다.
+ * <p>흐름 (ADR-006 §흐름 / ADR-007 Fail-Closed):
+ * <ol>
+ *   <li>Redis 1차 — {@link IdempotencyLuaScript} atomic SETNX (ADR-002).</li>
+ *   <li>Redis 장애 시 ({@link RedisUnavailableException}) — DB 2차 방어선
+ *       ({@link IdempotencyKeyRepository}) 으로 fallback. 정확한 hash 검증으로
+ *       이중 결제 차단을 보장.</li>
+ * </ol>
  */
 public class IdempotencyKeyService {
 
+    private final IdempotencyLuaScript luaScript;
     private final IdempotencyKeyRepository idempotencyKeyRepository;
 
-    public IdempotencyKeyService(IdempotencyKeyRepository idempotencyKeyRepository) {
+    public IdempotencyKeyService(IdempotencyLuaScript luaScript,
+                                 IdempotencyKeyRepository idempotencyKeyRepository) {
+        this.luaScript = luaScript;
         this.idempotencyKeyRepository = idempotencyKeyRepository;
     }
 
+    public IdempotencyCheckResult checkAndReserve(UUID idempotencyKey, String bodyHash) {
+        try {
+            return luaScript.execute(idempotencyKey, bodyHash);
+        } catch (RedisUnavailableException e) {
+            // ADR-006 §흐름 — Redis 장애 시 DB 2차 방어선
+            return checkInDatabase(idempotencyKey, bodyHash);
+        }
+    }
+
     /**
-     * Repository 조회 결과를 3-state 결과로 분기 (ADR-006 §흐름).
-     *
-     * <p>분기 우선순위:
+     * DB 2차 방어선 — Redis 장애 시 fallback. 분기 우선순위:
      * <ol>
      *   <li>존재하지 않음 → {@link ResultType#NEW}</li>
-     *   <li>존재하지만 expired → {@link ResultType#NEW} (만료 키는 새 결제로 처리)</li>
-     *   <li>body_hash 불일치 → {@link ResultType#HASH_MISMATCH} (변조 의심)</li>
-     *   <li>PROCESSING → {@link ResultType#PROCESSING}</li>
-     *   <li>COMPLETED → {@link ResultType#COMPLETED} + cachedResponse</li>
+     *   <li>existing.isExpired(now) → {@link ResultType#NEW}</li>
+     *   <li>!isBodyHashMatching → {@link ResultType#HASH_MISMATCH}</li>
+     *   <li>isProcessing → {@link ResultType#PROCESSING}</li>
+     *   <li>isCompleted → {@link ResultType#COMPLETED} + cachedResponse</li>
      * </ol>
      */
-    public IdempotencyCheckResult checkAndReserve(UUID idempotencyKey, String bodyHash) {
+    private IdempotencyCheckResult checkInDatabase(UUID idempotencyKey, String bodyHash) {
         Optional<IdempotencyKey> existing = idempotencyKeyRepository.findById(idempotencyKey);
 
         if (existing.isEmpty()) {
@@ -60,17 +76,17 @@ public class IdempotencyKeyService {
             return new IdempotencyCheckResult(ResultType.COMPLETED, key.getResponsePayload());
         }
 
-        // 도달 불가 — IdempotencyStatus enum 모든 값을 위에서 처리
         throw new IllegalStateException("Unhandled IdempotencyStatus: " + key.getStatus());
     }
 
     /**
      * 결제 완료 후 DB UPDATE (PROCESSING → COMPLETED + responsePayload + bookingId).
      *
-     * <p>Redis 캐시 갱신은 Phase 3.3 에서 {@code IdempotencyLuaScript.markCompleted}
-     * 가 추가되면 본 메소드 직후에 호출한다 (ADR-006 §흐름 — DB 트랜잭션 commit 후 Redis 갱신).
+     * <p>Redis 캐시 갱신은 Phase 3.4 또는 후속 phase 에서
+     * {@code IdempotencyLuaScript.markCompleted} 가 추가될 때 본 메소드 직후에
+     * 호출한다 (ADR-006 §흐름 — DB commit 후 Redis 갱신).
      *
-     * @param bodyHash 본격 Redis 갱신 시 storedHash 일치 검증용으로 사용 예정
+     * @param bodyHash Phase 3.3+ Redis 갱신 시 storedHash 일치 검증용 — 현재 unused
      */
     public void complete(UUID idempotencyKey, String bodyHash, String responsePayload, long bookingId) {
         idempotencyKeyRepository.updateToCompleted(idempotencyKey, responsePayload, bookingId);
