@@ -476,7 +476,7 @@ hex    = HexFormat.of().formatHex(digest)   // Java 17+, lowercase, 64자
 
 #### Phase 3.3: Infrastructure layer GREEN
 
-- [ ] pending
+- [x] done
 - **작성 대상**:
   - Redis Lua script (`idempotency_setnx.lua` — SETNX + body_hash 비교, atomic)
   - `IdempotencyKeyRedisAdapter` (Lua 호출)
@@ -491,7 +491,17 @@ hex    = HexFormat.of().formatHex(digest)   // Java 17+, lowercase, 64자
   ./gradlew test --tests IdempotencyKeyJpaRepositoryTest # Slice + Testcontainers MySQL
   ```
 - **AC**: 두 slice 테스트 GREEN. Lua atomic 동작 + DB UNIQUE 충돌 시 적절한 예외.
-- **결과**: ...
+- **결과**:
+  - **Flyway baseline**: `V1__init.sql` 9 테이블 (users / accommodation / booking / payment_attempt / cancellation_intent / outbox_event / processed_event / idempotency_key / shedlock) — ERD §8 그대로. CONVENTIONS-FILE.md §6 정합 (`utf8mb4_0900_ai_ci`, 컬럼 → PK → UNIQUE → INDEX → FK 순서).
+  - **JPA layer** (`infrastructure/persistence/`): `IdempotencyKeyJpaEntity` (8 필드 매핑, `@Enumerated(STRING)` status, `JSON` columnDefinition) + `IdempotencyKeyJpaRepository` (Spring Data + `@Modifying @Query updateToCompleted`) + `IdempotencyKeyRepositoryAdapter` (`@Component`, domain port impl, `@Transactional` save / update). domain↔entity 매핑 한 곳에 모음.
+  - **Redis Lua** (`infrastructure/redis/`): `idempotency_setnx.lua` (GET + SETNX + body_hash 비교, atomic — ADR-002) + `IdempotencyLuaScript` (`@Component` + `DefaultRedisScript` + `@CircuitBreaker(name="redisOps") @Bulkhead("redisOps")`) + `RedisUnavailableException` (Resilience4j fallback).
+  - **Resilience4j config**: `application.yml` 에 `redisOps` circuit breaker + bulkhead — ADR-007 §Decision 임계값 (5초 TIME_BASED / failureRate 50% / slowCallDuration 1s / waitDurationInOpenState 5s / maxConcurrent 100).
+  - **Service-Lua 통합**: `IdempotencyKeyService` 생성자 `(luaScript, repository)` 변경. `checkAndReserve` Lua 1차 호출 → `RedisUnavailableException` catch → `checkInDatabase()` DB 2차 fallback. 둘 다 같은 5-step 분기 (empty / expired / hash mismatch / processing / completed).
+  - **`application-test.yml` 정정** (test-author 발견 결함): `ddl-auto: validate` → `none`. Hibernate 6 가 `body_hash CHAR(64)` 를 `VARCHAR(64)` 로 매칭 실패해 모든 test profile context 부팅 fail. Flyway 가 schema 단일 출처라 validate 비활성이 정합.
+  - **검증** (모두 GREEN):
+    - `./gradlew test --tests "com.booking.idempotency.IdempotencyKeyServiceTest" --tests "com.booking.idempotency.IdempotencyKeyTest"` — unit 23 GREEN (Lua mock + DB fallback 양쪽)
+    - `./gradlew test --tests "com.booking.idempotency.IdempotencyKeyJpaRepositoryTest"` — slice 6 GREEN (Testcontainers MySQL 8.0)
+    - `./gradlew test --tests "com.booking.idempotency.IdempotencyLuaScriptTest"` — slice 6 GREEN (Testcontainers Redis 7-alpine, 100 동시 동일 키 atomic 검증 포함)
 
 #### Phase 3.4: API + Integration GREEN
 
@@ -567,6 +577,7 @@ hex    = HexFormat.of().formatHex(digest)   // Java 17+, lowercase, 64자
 - 2026-05-04 — Phase 2 RED 완전 검증 (docker daemon + Testcontainers): Integration 6/6 fail (`AssertionFailedError` — stub 응답 mismatch), Concurrency 1/1 fail. Spring Boot context + MySQL 8.0 + Redis 7-alpine 모두 정상 부팅. Phase 2 RED AC 100% 충족 (16/16 fail + compile pass).
 - 2026-05-04 — Phase 3.1 (Domain GREEN) done. `IdempotencyKey` 본격 구현 (immutable aggregate, complete()→ 새 인스턴스). Phase 2에서 누락됐던 `IdempotencyKeyTest` 보강 작성 (14 메소드 nested). `./gradlew test --tests IdempotencyKeyTest` BUILD SUCCESSFUL. `IdempotencyKeyServiceTest` 여전히 RED (Phase 3.2 영역) — AC 정합.
 - 2026-05-04 — Phase 3.2 (Application GREEN) done. `IdempotencyKeyService` checkAndReserve 5-step 분기 (empty/expired→NEW, hash mismatch, PROCESSING, COMPLETED+cached) + complete delegate. `BodyHashCalculator` SHA-256 hex 64자 (HexFormat.of()) + `|` 구분자 ambiguity 차단. unit test 23/23 GREEN (domain 14 + service/calculator 9). Integration / Concurrency 여전히 RED (Phase 3.3+ 영역) — AC 정합.
+- 2026-05-04 — Phase 3.3 (Infrastructure GREEN) done. Flyway V1 baseline 9 테이블 (ERD §8) + JPA adapter 3종 (Entity + JpaRepository + RepositoryAdapter, port impl) + Redis Lua (idempotency_setnx.lua + IdempotencyLuaScript + RedisUnavailableException) + Resilience4j config (redisOps CB + Bulkhead, ADR-007 §Decision). Service-Lua 통합 — checkAndReserve Lua 1차 → RedisUnavailableException catch → DB 2차 fallback. `application-test.yml` ddl-auto validate→none 정정 (Hibernate 6 + body_hash CHAR(64) 매핑 fail 회피, Flyway 단일 출처). 검증: unit 23 + slice 12 = 35 GREEN (`IdempotencyKeyServiceTest` + `IdempotencyKeyTest` + `IdempotencyKeyJpaRepositoryTest` + `IdempotencyLuaScriptTest`). Integration / Concurrency 여전히 부분 RED (Controller 미구현, Phase 3.4 영역).
 
 ---
 
