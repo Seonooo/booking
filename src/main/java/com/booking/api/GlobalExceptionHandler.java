@@ -1,5 +1,6 @@
 package com.booking.api;
 
+import com.booking.application.AccommodationNotFoundException;
 import com.booking.application.IdempotencyHashMismatchException;
 import com.booking.application.IdempotencyProcessingException;
 import com.booking.domain.payment.InvalidPaymentCompositionException;
@@ -24,7 +25,8 @@ import java.util.Map;
  *   <li>409 — 멱등성 키 처리 중 (ADR-006)</li>
  *   <li>422 — 멱등성 키 body 변조 (ADR-006)</li>
  *   <li>400 — 도메인 invariant 위반 (ADR-009 PaymentComposition / Bean Validation)</li>
- *   <li>503 — Redis Fail-Closed (ADR-007)</li>
+ *   <li>404 — 존재하지 않는 상품 (REQUIREMENTS §1.1 GET /checkout)</li>
+ *   <li>503 — Redis Fail-Closed (ADR-007) / DB UNIQUE 충돌</li>
  * </ul>
  */
 @RestControllerAdvice
@@ -48,6 +50,12 @@ public class GlobalExceptionHandler {
     public ResponseEntity<Map<String, String>> handleInvalidComposition(InvalidPaymentCompositionException e) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
             .body(Map.of("message", e.getMessage()));
+    }
+
+    @ExceptionHandler(AccommodationNotFoundException.class)
+    public ResponseEntity<Map<String, String>> handleAccommodationNotFound(AccommodationNotFoundException e) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+            .body(Map.of("message", "존재하지 않는 상품입니다"));
     }
 
     @ExceptionHandler(RedisUnavailableException.class)
