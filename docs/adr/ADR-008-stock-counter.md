@@ -2,7 +2,60 @@
 
 ## Status
 
-Accepted — supersedes [ADR-001](./ADR-001-queue-length.md)
+**Accepted (정정됨 2026-05-04)** — supersedes [ADR-001](./ADR-001-queue-length.md)
+
+### 정정 사유 (2026-05-04) — 결제 실패 시 hold 유지
+
+본 ADR §Decision 의 *"결제 실패/TTL 만료 시 재고 INCR"* 결정 중 **결제 실패 부분**을 다음과 같이 정정한다:
+
+| 항목 | 원안 (2026-05-01) | 정정 (2026-05-04) |
+|---|---|---|
+| TTL 만료 시 | 재고 INCR (재고 회수) | 변경 없음 — TTL 만료 시 INCR |
+| **결제 실패 (PG 4XX 거절)** | **즉시 INCR + 사용자는 새로고침 폴링으로 재참여** | **hold 유지 — 사용자가 결제 수단 변경 후 새 idempotency-key 로 재시도 가능. 5분 TTL 만료 시 sweeper 가 INCR** |
+| trade-off 우선 | 재고 회전 우선 | **결제 시도자 UX 우선** |
+| §같은 사용자 재진입 불가 적용 범위 | 모든 재진입 차단 (booking COMPLETED 여부 무관) | **결제 실패 후 같은 사용자 재시도 = 같은 hold 사용 (결제 시도자 보호). booking COMPLETED 후 재진입만 차단** |
+
+#### 정정 사유
+
+`docs/REQUIREMENTS.md` §1.2 의 *"POST Booking API: 주문서 정보를 입력받아 결제를 진행하고 최종 주문을 생성"* 정의가 본 ADR §재고 풀림 시 분배 정책 의 *"새로고침 폴링 재참여"* 모델과 직접 충돌. POST /booking 정의대로라면:
+
+- POST /booking 1회 = 결제 1회 시도 단위
+- PG 4XX (한도 초과 / 카드 정지 / 인증 실패) = *결제 시도 시도했으나 실패* — booking 미생성
+- 사용자는 결제 수단 변경 후 다시 시도 가능 (산업 관행 — 인터파크 / 토스 결제 페이지)
+
+본 ADR 원안의 *즉시 INCR* 는 다음 시나리오에서 사용자 UX 박탈:
+
+1. 사용자 A 가 stock tryHold 성공 (10 → 9)
+2. PG 결제 시도 → 한도 초과 4XX
+3. *원안*: stock INCR (10) → 다른 사용자 진입 → A 가 다른 카드로 재시도해도 SOLD_OUT
+4. *정정*: hold 유지 → A 가 다른 카드로 새 POST /booking 호출 → 같은 hold 안에서 재시도 → 결제 성공 또는 다른 카드도 실패 시 5분 TTL 만료까지 추가 시도 가능
+
+#### Trade-off 재평가
+
+| 평가 축 | 원안 (즉시 INCR) | 정정 (hold 유지) |
+|---|---|---|
+| 재고 회전 속도 | 빠름 (실패 즉시 다음 사용자) | 느림 (5분 TTL 까지 묶임) |
+| 결제 시도자 UX | 박탈 (재시도 시 SOLD_OUT 가능) | 보장 (5분 안에서 재시도 자유) |
+| 봇 점유 표면 | 낮음 (회전 빠름) | 높음 (5분 점유 가능) — ADR-005 Rate Limit + 본인인증으로 대응 |
+| ADR-004 *"약한 동등 시도 기회"* 정합 | 5분 윈도우 내내 폴링 재참여 가능 | 결제 시도자 우선 + TTL 만료 후 재참여 가능 |
+| `REQUIREMENTS.md` §1.2 정합 | ❌ 충돌 | ✅ 정합 |
+| 산업 관행 (인터파크 / 토스) | ❌ 미정합 | ✅ 정합 |
+
+#### 본 정정의 후속 영향
+
+- **`docs/adr/DECISIONS.md` §11 케이스 1** (PG 거절) 의 *"재고 처리: 즉시 INCR / 응답 400"* 도 *"hold 유지 (5분 TTL) / 응답 400 + 다른 결제 수단 재시도 안내"* 로 함께 amendment.
+- **TTL 만료 sweeper 의무화**: booking HOLD status 5분 초과 자동 cleanup + stock INCR. 본 ADR 은 *5분 TTL 만료 시 sweeper 가 INCR* 만 명시, sweeper 자체 구현은 ADR-010 ShedLock 인프라와 묶어 Outbox 폴러 / Reconciliation 워커 feature 진입 시점에 통합.
+- **§Consequences §부정 결과** 의 *"결제 실패 직후 ~ 다음 사용자 폴링 도착 사이의 공백"* 항목은 본 정정으로 *"5분 TTL 까지 결제 시도자 점유 가능 — 봇 점유 5분 가능성 ↑"* 으로 의미 변경. 새 부정 결과 = 봇이 의도적으로 5분 hold 점유 시도. ADR-005 Rate Limit / ADR-007 Fail-Closed / 본인인증 가정 (운영) 으로 다층 대응.
+- **§Consequences §재검토 시점** 에 다음 추가: *"5분 TTL 동안 hold 점유로 정상 사용자 진입 차단 빈번 시 — TTL 단축 검토 (예: 3분 또는 PG 결제 평균 응답 시간 기반 동적 TTL)"*.
+- **§Decision §재고 풀림 시 분배 정책** 의 *"같은 사용자가 이미 hold 중이면 재진입 불가"* 는 본 정정으로 *"booking COMPLETED 사용자만 재진입 불가. 결제 실패 후 재시도 = hold 재사용 허용"* 로 의미 변경.
+
+#### 본 정정의 자기 교정 의미
+
+본 ADR 원안은 *"재고 회전 우선 = 정상 사용자 진입 자주"* 가치를 *"결제 시도자 UX"* 보다 우선했다. 산업 관행 / `REQUIREMENTS.md` §1.2 정의 / 사용자 의도 3축 모두 후자 우선이라는 점이 ADR 작성 후 명확해졌다. 본 정정은 후임자에게 *"결정 시 `REQUIREMENTS.md` API 정의를 ADR 결정의 상위 SSOT 로 대조해야 한다"* 학습 차단 위험 회피.
+
+본 정정 이후 본문 §Decision §결제 상태 전이 / §결제 TTL 동작 / §재고 풀림 시 분배 정책 / §Consequences 의 해당 항목은 본 amendment 우선 적용으로 읽는다. 본문 자체는 변경하지 않으며, 정정 영역은 본 §정정 사유 섹션이 단일 진실 출처.
+
+---
 
 ## Context
 
