@@ -52,6 +52,12 @@ public class PaymentAttemptJpaEntity {
     @Column(name = "last_requested_at")
     private Instant lastRequestedAt;
 
+    @Column(name = "last_reconcile_at")
+    private Instant lastReconcileAt;
+
+    @Column(name = "reconcile_retry_count", nullable = false)
+    private int reconcileRetryCount;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -65,6 +71,7 @@ public class PaymentAttemptJpaEntity {
     private PaymentAttemptJpaEntity(Long id, UUID attemptId, long bookingId, BigDecimal amount,
                                     String paymentCompositionSnapshot, PaymentAttemptStatus status,
                                     String externalPaymentId, Instant lastRequestedAt,
+                                    Instant lastReconcileAt, int reconcileRetryCount,
                                     Instant createdAt, Instant updatedAt) {
         this.id = id;
         this.attemptId = attemptId;
@@ -74,6 +81,8 @@ public class PaymentAttemptJpaEntity {
         this.status = status;
         this.externalPaymentId = externalPaymentId;
         this.lastRequestedAt = lastRequestedAt;
+        this.lastReconcileAt = lastReconcileAt;
+        this.reconcileRetryCount = reconcileRetryCount;
         this.createdAt = createdAt;
         this.updatedAt = updatedAt;
     }
@@ -83,6 +92,7 @@ public class PaymentAttemptJpaEntity {
             p.getId(), p.getAttemptId(), p.getBookingId(), p.getAmount(),
             p.getPaymentCompositionSnapshot(), p.getStatus(),
             p.getExternalPaymentId(), p.getLastRequestedAt(),
+            p.getLastReconcileAt(), p.getReconcileRetryCount(),
             p.getCreatedAt(), p.getUpdatedAt()
         );
     }
@@ -90,7 +100,9 @@ public class PaymentAttemptJpaEntity {
     public PaymentAttempt toDomain() {
         return new PaymentAttempt(
             id, attemptId, bookingId, amount, paymentCompositionSnapshot,
-            status, externalPaymentId, lastRequestedAt, createdAt, updatedAt
+            status, externalPaymentId, lastRequestedAt,
+            lastReconcileAt, reconcileRetryCount,
+            createdAt, updatedAt
         );
     }
 

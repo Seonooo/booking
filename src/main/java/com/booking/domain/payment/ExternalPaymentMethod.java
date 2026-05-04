@@ -34,4 +34,13 @@ public interface ExternalPaymentMethod extends PaymentMethod {
      * @param cancelAmount 취소 금액 (부분 취소 지원)
      */
     void cancel(String paymentKey, long cancelAmount);
+
+    /**
+     * PG 상태 조회 — Reconciliation worker (ADR-011) 가 booking UNKNOWN row 의 결과 확정용.
+     *
+     * <p>1차 기준 = {@code externalPaymentId}. fallback = {@code attemptId} (PG idempotency 헤더).
+     *
+     * @return SUCCESS / FAILED / NOT_FOUND
+     */
+    PaymentStatusResult queryStatus(String externalPaymentId, java.util.UUID attemptId);
 }

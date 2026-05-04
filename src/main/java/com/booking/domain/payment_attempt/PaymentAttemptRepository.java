@@ -20,4 +20,15 @@ public interface PaymentAttemptRepository {
     int casToRequested(long id);
 
     void updateToTerminal(long id, PaymentAttemptStatus status, String externalPaymentId);
+
+    /**
+     * Reconciliation worker (feature-007) 후보 조회 — TIMEOUT status + last_reconcile_at NULL 또는
+     * threshold 이전 + reconcile_retry_count &lt;= 3.
+     */
+    java.util.List<PaymentAttempt> findStaleUnknown(java.time.Instant lastReconcileBefore, int batchLimit);
+
+    /**
+     * Reconciliation 결과 NOT_FOUND 시 — last_reconcile_at NOW + retry_count++.
+     */
+    void incrementRetryCount(long id);
 }

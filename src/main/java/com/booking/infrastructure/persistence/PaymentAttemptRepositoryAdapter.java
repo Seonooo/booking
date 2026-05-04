@@ -6,6 +6,9 @@ import com.booking.domain.payment_attempt.PaymentAttemptStatus;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
+import java.util.List;
+
 /**
  * Driven adapter — domain port {@link PaymentAttemptRepository} 구현체 (ADR-014).
  */
@@ -36,5 +39,18 @@ public class PaymentAttemptRepositoryAdapter implements PaymentAttemptRepository
     @Transactional
     public void updateToTerminal(long id, PaymentAttemptStatus status, String externalPaymentId) {
         jpaRepository.updateToTerminal(id, status.name(), externalPaymentId);
+    }
+
+    @Override
+    public List<PaymentAttempt> findStaleUnknown(Instant threshold, int batchLimit) {
+        return jpaRepository.findStaleUnknown(threshold, batchLimit).stream()
+            .map(PaymentAttemptJpaEntity::toDomain)
+            .toList();
+    }
+
+    @Override
+    @Transactional
+    public void incrementRetryCount(long id) {
+        jpaRepository.incrementRetryCount(id);
     }
 }
