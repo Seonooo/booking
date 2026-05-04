@@ -1,6 +1,6 @@
-# Redis Sentinel HA local setup (ADR-007)
+# Redis Sentinel HA local setup (ADR-007) — self-contained
 #
-# 1 Master + 2 Replicas + 3 Sentinels — operating prod topology.
+# MySQL 8.0 + 1 Redis Master + 2 Replicas + 3 Sentinels.
 # Use this when verifying Sentinel client config or failover behaviour.
 #
 # Usage:
@@ -11,12 +11,32 @@
 # Spring profile to match: src/main/resources/application-local-sentinel.yml
 #   ./gradlew bootRun --args='--spring.profiles.active=local-sentinel'
 #
-# NOTE: This file does NOT include MySQL. Run alongside docker-compose.yml
-#   if you need MySQL too:
-#     docker compose up -d mysql
-#     docker compose -f docker-compose.sentinel.yml up -d
+# MySQL data persists in named volume `booking_mysql_data` (shared with
+# docker-compose.yml — switching modes does not lose data). Reset with
+# `docker compose -f docker-compose.sentinel.yml down -v`.
 
 services:
+  mysql:
+    image: mysql:8.0
+    container_name: booking-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootsecret}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-booking}
+      MYSQL_USER: ${MYSQL_USER:-booking}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-booking}
+      TZ: UTC
+    ports:
+      - "3306:3306"
+    volumes:
+      - booking_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-rootsecret}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+
   redis-master:
     image: redis:7-alpine
     container_name: booking-redis-master
@@ -84,3 +104,7 @@ services:
     depends_on:
       redis-master:
         condition: service_healthy
+
+volumes:
+  booking_mysql_data:
+    name: booking_mysql_data

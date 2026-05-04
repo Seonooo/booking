@@ -28,22 +28,20 @@
 
 ### 로컬 인프라 실행
 
+두 모드 모두 **단일 명령으로 self-contained** — MySQL + Redis가 한 번에 부팅된다. 모드 전환 시 named volume `booking_mysql_data` 를 공유하므로 데이터는 보존된다.
+
 | 모드 | 명령 | 용도 |
 |---|---|---|
 | **기본** | `docker compose up -d` | MySQL 8.0 + 단일 Redis (가장 빠른 dev loop) |
-| **Sentinel HA** | `docker compose -f docker-compose.sentinel.yml up -d` | ADR-007 운영 토폴로지(1M+2R+3S). Sentinel client config / failover 검증 시 |
+| **Sentinel HA** | `docker compose -f docker-compose.sentinel.yml up -d` | ADR-007 운영 토폴로지 — MySQL 8.0 + Redis 1M+2R+3S. Sentinel client config / failover 검증 시 |
 
-기본 모드 — Spring Boot 실행:
+Spring Boot 실행:
 ```bash
-./gradlew bootRun                                              # local profile (default)
+./gradlew bootRun                                                # local profile (default)
+./gradlew bootRun --args='--spring.profiles.active=local-sentinel'   # Sentinel 모드
 ```
 
-Sentinel 모드 — Spring Boot 실행 (`application-local-sentinel.yml`):
-```bash
-./gradlew bootRun --args='--spring.profiles.active=local-sentinel'
-```
-
-데이터 영속화: MySQL은 named volume `booking_mysql_data` 에 보존됨. 초기화 시 `docker compose down -v`. 자세한 임계값 / 토폴로지 근거는 `docs/adr/ADR-007-redis-fallback.md` §Decision.
+데이터 초기화: `docker compose down -v` (또는 `-f docker-compose.sentinel.yml down -v`). 자세한 임계값 / 토폴로지 근거는 `docs/adr/ADR-007-redis-fallback.md` §Decision.
 
 ---
 
