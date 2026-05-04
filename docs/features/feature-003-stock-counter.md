@@ -2,7 +2,7 @@
 
 | Status | Owner | Created | Last Updated |
 |---|---|---|---|
-| Planning | TBD | 2026-05-04 | 2026-05-04 |
+| In-Progress | TBD | 2026-05-04 | 2026-05-04 |
 
 > **Self-contained 원칙 (ADR-013).** 모든 컨텍스트(REQUIREMENTS / ADR / ERD / 영향 코드 경로 / Pattern 번호)는 본 파일 안에서 인라인. 외부 대화 참조 금지.
 
@@ -68,10 +68,10 @@ Scenario: [edge:concurrency] 재고 10 + 100 동시 요청 → 정확히 10 succ
 
 | # | Scenario | Type | Test Method | File | Status |
 |---|---|---|---|---|---|
-| 1 | 재고 10 → 첫 진입 → 200 + hold key set | happy | `should_decrement_stock_and_set_hold_key_when_purchase_succeeds` | `BookingStockIntegrationTest.java` | pending |
-| 2 | 재고 1 → 진입 성공 | edge:boundary | `should_decrement_stock_to_zero_when_last_one` | `BookingStockIntegrationTest.java` | pending |
-| 3 | 재고 0 → SOLD_OUT 409 | edge:boundary | `should_return_409_sold_out_when_stock_is_zero` | `BookingStockIntegrationTest.java` | pending |
-| 4 | 100 동시 요청 → 10 success / 90 SOLD_OUT, oversell 0 | edge:concurrency | `should_oversell_zero_when_100_concurrent_requests_for_stock_10` | `BookingStockConcurrencyTest.java` | pending |
+| 1 | 재고 10 → 첫 진입 → 200 + hold key set | happy | `should_decrement_stock_and_set_hold_key_when_purchase_succeeds` | `BookingStockIntegrationTest.java` | RED |
+| 2 | 재고 1 → 진입 성공 | edge:boundary | `should_decrement_stock_to_zero_when_last_one` | `BookingStockIntegrationTest.java` | RED |
+| 3 | 재고 0 → SOLD_OUT 409 | edge:boundary | `should_return_409_sold_out_when_stock_is_zero` | `BookingStockIntegrationTest.java` | RED |
+| 4 | 100 동시 요청 → 10 success / 90 SOLD_OUT, oversell 0 | edge:concurrency | `should_oversell_zero_when_100_concurrent_requests_for_stock_10` | `BookingStockConcurrencyTest.java` | RED |
 
 **Edge case coverage**: 3/4 (75%) — `[edge:boundary]` ×2, `[edge:concurrency]` ×1. ADR-013 §Edge Case 의무 조항 충족 + ADR-002/008 *동시성 의무 영역* 충족.
 
@@ -210,7 +210,7 @@ public ResponseEntity<Map<String, String>> handleSoldOut(StockSoldOutException e
 - **테스트 파일**:
   - `src/test/java/com/booking/integration/BookingStockIntegrationTest.java` — Scenario 1~3.
   - `src/test/java/com/booking/concurrency/BookingStockConcurrencyTest.java` — Scenario 4 (100 동시 요청, ExecutorService + CountDownLatch).
-- **base class 결정**: standalone Testcontainers (feature-002 패턴). PR #12 IntegrationTestSupport 통합 race 회피. 통합은 별도 PR 검토 사항.
+- **base class 결정**: `extends IntegrationTestSupport` — `BookingIdempotencyIntegrationTest` 와 동일 cache key (PG `external.pg.url` `@DynamicPropertySource`) 공유로 Spring context cache hit, 다중 test class 동시 실행 시에도 race 없음. PR #12 의 standalone fallback 은 PG 의존 없는 `CheckoutIntegrationTest` 한정 (cache key 다름).
 - **mocking 경계**: WireMock(PG) — 본 feature 는 *PG 항상 성공* stub. Testcontainers(MySQL+Redis).
 - **검증 커맨드** (모두 fail 해야 RED):
   ```bash
@@ -248,7 +248,10 @@ public ResponseEntity<Map<String, String>> handleSoldOut(StockSoldOutException e
 #### Phase 3.3 (마지막): API + Integration GREEN
 
 - **작성 대상**: 변경 X — Phase 3.1/3.2 변경 통합으로 충분.
-- **fixture 변경**: 본 feature 의 `BookingStockIntegrationTest` / `BookingStockConcurrencyTest` setUp 에서 `redisTemplate.opsForValue().set("stock:accommodation:42", "10")`. **기존** `BookingIdempotencyIntegrationTest` / `BookingIdempotencyConcurrencyTest` 의 fixture 에도 동일 set 추가 (regression 방지).
+- **fixture 변경**:
+  - `IntegrationTestSupport.seedAndCleanFixtures` 에 stock seed 추가 — `redisTemplate.opsForValue().set("stock:accommodation:42", "10")` + hold key cleanup. 모든 통합/동시성 test 기본값.
+  - `BookingStockIntegrationTest` 의 boundary 시나리오 (재고 1, 0) 는 자체 @BeforeEach 에서 stock 값 override.
+  - `BookingStockConcurrencyTest` 는 100 명 사용자 (userId 10000~10099) 추가 batch INSERT — booking.user_id FK 만족.
 - **검증 커맨드**:
   ```bash
   ./gradlew test --tests "com.booking.integration.BookingStockIntegrationTest"
@@ -328,6 +331,7 @@ ADR-008 amendment §재고 풀림 시 분배 정책 amendment — *"booking COMP
 
 - 2026-05-04 — Plan populated by main claude (covered ADRs: ADR-002, ADR-007, ADR-008 amendment, ADR-014). `tdd-planner` agent skip — 사용자 *"빠르게"* directive 정합.
 - 2026-05-04 — REQUIREMENTS §1.2 정합 검토로 ADR-008 amendment 트리거 → plan 의 *"PG 실패 → stock release"* 흐름 제거, *"hold 유지 + sweeper out-of-scope"* 모델로 정정.
+- 2026-05-04 — Phase 2 RED done — `BookingStockIntegrationTest` 3 + `BookingStockConcurrencyTest` 1 = 4/4 fail (production 미구현). base class = `IntegrationTestSupport` extend (cache key 정합 — race 없음).
 
 ---
 
