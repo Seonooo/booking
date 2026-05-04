@@ -95,4 +95,12 @@ public class IdempotencyKeyService {
         idempotencyKeyRepository.updateToCompleted(idempotencyKey, responsePayload, bookingId);
         luaScript.markCompleted(idempotencyKey, bodyHash, responsePayload);
     }
+
+    /**
+     * NEW 단계 후 비즈니스 실패 (예: SOLD_OUT) 시 idempotency key 를 Redis 에서 제거.
+     * 클라이언트가 새 키로 재시도 가능하게 한다. DB 영속 없는 단계라 Redis 만 clean.
+     */
+    public void releaseKey(UUID idempotencyKey) {
+        luaScript.releaseKey(idempotencyKey);
+    }
 }

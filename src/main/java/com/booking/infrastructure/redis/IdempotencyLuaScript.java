@@ -83,6 +83,20 @@ public class IdempotencyLuaScript {
             bodyHash, responsePayload, String.valueOf(DEFAULT_TTL_SECONDS));
     }
 
+    /**
+     * idempotency key 강제 해제 — NEW 단계 진입 후 비즈니스 실패 (예: SOLD_OUT) 로
+     * DB INSERT 전 cleanup 시 호출. 클라이언트가 새 키로 재시도 가능하게 한다.
+     *
+     * <p>DB 영속 없는 단계라 Redis DEL 만으로 clean. fallback 은 warn log only — Redis
+     * 실패해도 15분 TTL 만료 시 자동 cleanup, 그 사이 동일 키 재시도는 PROCESSING 으로
+     * 응답 (409). 클라이언트 영향 작음.
+     */
+    @CircuitBreaker(name = "redisOps", fallbackMethod = "releaseKeyFallback")
+    @Bulkhead(name = "redisOps")
+    public void releaseKey(UUID key) {
+        redisTemplate.delete(KEY_PREFIX + key);
+    }
+
     private IdempotencyCheckResult parseResult(List<Object> raw) {
         if (raw == null || raw.isEmpty()) {
             throw new IllegalStateException("Lua returned empty result");
@@ -112,6 +126,12 @@ public class IdempotencyLuaScript {
     @SuppressWarnings("unused")
     private void markCompletedFallback(UUID key, String bodyHash, String responsePayload, Throwable t) {
         log.warn("[REDIS_MARK_COMPLETED_FALLBACK] key={} (DB is source of truth, next request will fallback to DB)",
+            key, t);
+    }
+
+    @SuppressWarnings("unused")
+    private void releaseKeyFallback(UUID key, Throwable t) {
+        log.warn("[REDIS_RELEASE_KEY_FALLBACK] key={} (15분 TTL 만료까지 같은 키 재시도는 PROCESSING 응답)",
             key, t);
     }
 }

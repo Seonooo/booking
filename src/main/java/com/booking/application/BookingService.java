@@ -13,6 +13,7 @@ import com.booking.domain.payment.ExternalPaymentMethod;
 import com.booking.domain.payment.PaymentComposition;
 import com.booking.domain.payment.PaymentRequest;
 import com.booking.domain.payment.PaymentResult;
+import com.booking.domain.stock.StockRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
@@ -47,12 +48,14 @@ import java.util.UUID;
 public class BookingService {
 
     private static final long IDEMPOTENCY_TTL_MINUTES = 15;
+    private static final int STOCK_HOLD_TTL_SECONDS = 300;
 
     private final IdempotencyKeyService idempotencyKeyService;
     private final IdempotencyKeyRepository idempotencyKeyRepository;
     private final BodyHashCalculator bodyHashCalculator;
     private final BookingRepository bookingRepository;
     private final ExternalPaymentMethod cardPayment;
+    private final StockRepository stockRepository;
     private final ObjectMapper objectMapper;
 
     public BookingService(IdempotencyKeyService idempotencyKeyService,
@@ -60,12 +63,14 @@ public class BookingService {
                           BodyHashCalculator bodyHashCalculator,
                           BookingRepository bookingRepository,
                           ExternalPaymentMethod cardPayment,
+                          StockRepository stockRepository,
                           ObjectMapper objectMapper) {
         this.idempotencyKeyService = idempotencyKeyService;
         this.idempotencyKeyRepository = idempotencyKeyRepository;
         this.bodyHashCalculator = bodyHashCalculator;
         this.bookingRepository = bookingRepository;
         this.cardPayment = cardPayment;
+        this.stockRepository = stockRepository;
         this.objectMapper = objectMapper;
     }
 
@@ -81,6 +86,16 @@ public class BookingService {
                 return BookingFlowResult.cached(check.cachedResponse());
             }
             case NEW           -> { /* 진행 */ }
+        }
+
+        // 단계 3 — 재고 atomic hold (ADR-008 / ADR-002 Lua atomic).
+        // 본 PR 은 happy path 만 — PG 실패 시 hold 유지 흐름은 Saga+Outbox feature 영역
+        // (ADR-008 amendment 2026-05-04 정합).
+        if (!stockRepository.tryHold(request.productId(), request.userId(), STOCK_HOLD_TTL_SECONDS)) {
+            // SOLD_OUT — DB INSERT 전이라 idempotency key Redis 만 cleanup.
+            // 클라이언트가 새 키로 재시도 가능 (재고 풀린 시점에 진입).
+            idempotencyKeyService.releaseKey(idempotencyKey);
+            throw new StockSoldOutException();
         }
 
         // PaymentComposition 검증 (혼용 정책 — 본 PR 은 외부 1개 = CARD 단일)
