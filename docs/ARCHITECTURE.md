@@ -17,7 +17,7 @@
 | 재고 | 10개 한정 |
 | 결제 수단 | 신용카드, Y페이, Y포인트 (복합 결제 일부 가능) |
 | 핵심 SLO | **Fairness 100% > Availability 99.9%** |
-| 인프라 | Spring Boot, Redis Sentinel HA, PostgreSQL/MySQL, 외부 PG |
+| 인프라 | Spring Boot, Redis Sentinel HA, MySQL 8.0+, 외부 PG (mock) |
 | 배포 환경 | 다중 인스턴스 수평 확장 (4~5대 + LB), stateless |
 
 **SLO 설명**: Fairness 100%는 모든 Fail-Closed 결정의 근거이다. Redis 장애 시 Fail-Open으로 통과시키면 봇/매크로 진입, 초과 판매, 이중 결제가 발생할 수 있으며 이는 무결성 영구 훼손이다. 503 응답으로 인한 가용성 저하는 재시도로 복구 가능하지만 무결성 훼손은 불가능하다. (ADR-007)
