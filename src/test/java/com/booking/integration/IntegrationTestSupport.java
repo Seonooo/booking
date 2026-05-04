@@ -74,6 +74,8 @@ public abstract class IntegrationTestSupport {
     @BeforeEach
     void seedAndCleanFixtures() {
         // 의존성 역순 cleanup (FK 무결성 보존)
+        jdbcTemplate.execute("DELETE FROM outbox_event");
+        jdbcTemplate.execute("DELETE FROM payment_attempt");
         jdbcTemplate.execute("DELETE FROM idempotency_key");
         jdbcTemplate.execute("DELETE FROM booking");
         jdbcTemplate.execute("DELETE FROM accommodation");

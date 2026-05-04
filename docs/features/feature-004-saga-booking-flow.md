@@ -2,7 +2,7 @@
 
 | Status | Owner | Created | Last Updated |
 |---|---|---|---|
-| In-Progress | TBD | 2026-05-04 | 2026-05-04 |
+| Review | TBD | 2026-05-04 | 2026-05-04 |
 
 > **Self-contained (ADR-013).** 모든 컨텍스트(REQUIREMENTS / ADR / ERD / 영향 코드 경로 / Pattern 번호) 인라인. 외부 대화 참조 금지.
 
@@ -101,11 +101,11 @@ Scenario: [edge:failure] PG 성공 후 DB 커밋 실패 → fallback 로깅 + bo
 
 | # | Scenario | Type | Test Method | File | Status |
 |---|---|---|---|---|---|
-| 1 | PG 성공 → booking COMPLETED + outbox INSERT | happy | `should_complete_booking_and_insert_outbox_when_pg_success` | `BookingSagaIntegrationTest.java` | RED |
-| 2 | PG 4XX → booking FAILED + 400 | edge:failure | `should_mark_booking_failed_and_return_400_when_pg_rejects` | `BookingSagaIntegrationTest.java` | RED |
-| 3 | PG 5XX → booking UNKNOWN + 503 | edge:failure | `should_mark_booking_unknown_when_pg_5xx` | `BookingSagaIntegrationTest.java` | RED |
-| 4 | PG timeout → booking UNKNOWN + 503 | edge:failure | `should_mark_booking_unknown_when_pg_timeout` | `BookingSagaIntegrationTest.java` | RED |
-| 5 | PG 성공 + DB 실패 → fallback 로깅 + 503 | edge:failure | `should_log_saga_compensation_marker_when_db_fails_after_pg_success` | `BookingSagaCompensationTest.java` | GREEN (production fail-safe 흐름 정합 — 시나리오 5 의 *fallback 로깅 마커* 검증은 본 PR scope 외) |
+| 1 | PG 성공 → booking COMPLETED + outbox INSERT | happy | `should_complete_booking_and_insert_outbox_when_pg_success` | `BookingSagaIntegrationTest.java` | GREEN |
+| 2 | PG 4XX → booking FAILED + 400 | edge:failure | `should_mark_booking_failed_and_return_400_when_pg_rejects` | `BookingSagaIntegrationTest.java` | GREEN |
+| 3 | PG 5XX → booking UNKNOWN + 503 | edge:failure | `should_mark_booking_unknown_when_pg_5xx` | `BookingSagaIntegrationTest.java` | GREEN |
+| 4 | PG timeout → booking UNKNOWN + 503 | edge:failure | `should_mark_booking_unknown_when_pg_timeout` | `BookingSagaIntegrationTest.java` | GREEN |
+| 5 | PG 성공 + DB 실패 → fallback 로깅 + 503 | edge:failure | `should_log_saga_compensation_marker_when_db_fails_after_pg_success` | `BookingSagaCompensationTest.java` | GREEN (mock = IdempotencyKeyRepository.save throw — finalizeSuccess 트랜잭션 롤백 → booking PG_PENDING 1건 + paymentAttempt REQUESTED 1건 + outbox 0건 + 503) |
 
 > **시나리오 5 가 별 test class 인 이유**: `@MockitoBean BookingRepository` 가 모든 시나리오에 적용되면 시나리오 1~4 의 *real save 흐름* 이 망가진다. Spring context cache key 정합 — mock 사용 시 별 cache (별 class 분리). 시나리오 1~4 는 일반 IntegrationTestSupport 정합.
 
@@ -395,6 +395,12 @@ ADR-008 amendment §재고 풀림 시 분배 정책 amendment — *"booking COMP
 - 2026-05-04 — Plan populated by main claude (covered ADRs: ADR-008 amendment, ADR-009, ADR-010, ADR-011, ADR-014; DECISIONS.md §11). 옵션 X 채택 — booking 상태 머신 본격 + PaymentAttempt 도메인 + outbox INSERT + 결제 실패 3 케이스 진입. 보상 / 폴러 / sweeper / reconciliation 후속 feature 위임. **본 feature 머지 후 feature-005/006/007 병렬 가능** (사용자 *"병렬 처리 고려"* directive 정합).
 - 2026-05-04 — V1__init.sql 확인 — payment_attempt + outbox_event 7 테이블 이미 포함. V2 마이그레이션 작성 X (기존 plan 변경).
 - 2026-05-04 — Phase 2 RED — `BookingSagaIntegrationTest` 4 시나리오 fail (production 미구현 정합) + `BookingSagaCompensationTest` 1 시나리오 unexpectedly GREEN (production fail-safe 흐름 우연 정합 — fallback 로깅 마커 검증은 본 PR scope 외). 핵심 시나리오 4 RED 충분 — Phase 3 GREEN 진입 가능.
+- 2026-05-04 — Phase 3.1 GREEN — PaymentAttempt domain + JPA + Adapter. 컴파일 통과.
+- 2026-05-04 — Phase 3.2 GREEN — OutboxEvent domain + JPA + Adapter. 컴파일 통과.
+- 2026-05-04 — Phase 3.3 GREEN — CardPayment 4XX/5XX/timeout 분기 + PaymentRejected/TimeoutException + BookingRepository.casToStatus. 컴파일 통과.
+- 2026-05-04 — Phase 3.4 GREEN — BookingService 본격 흐름 통합 (TransactionTemplate 으로 persistInitialState / finalizeSuccess / finalizeRejected / finalizeTimeout 트랜잭션 분리, AOP self-invocation 회피). GlobalExceptionHandler PaymentRejected 400 / PaymentTimeout 503 매핑. **5 시나리오 GREEN + 전체 ./gradlew test BUILD SUCCESSFUL**.
+- 2026-05-04 — `IdempotencyKeyRepositoryAdapter` `@Component` → `@Repository` 변경 (Spring `PersistenceExceptionTranslator` 작동 — Hibernate `ConstraintViolationException` → `DataIntegrityViolationException` 자동 변환). `entityManager.persist` 후 `flush()` 명시 — UNIQUE 위반 즉시 throw (deferred INSERT TransactionSystemException wrap 회피). 둘 다 BookingIdempotencyIntegrationTest Scenario 7 (Redis 장애 + DB UNIQUE → 503) 회귀 방지 영향.
+- 2026-05-04 — `IntegrationTestSupport.seedAndCleanFixtures` 의 cleanup 순서에 `payment_attempt` + `outbox_event` 추가 (FK 무결성 보존).
 
 ---
 

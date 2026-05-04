@@ -5,6 +5,8 @@ import com.booking.application.IdempotencyHashMismatchException;
 import com.booking.application.IdempotencyProcessingException;
 import com.booking.application.StockSoldOutException;
 import com.booking.domain.payment.InvalidPaymentCompositionException;
+import com.booking.infrastructure.payment.PaymentRejectedException;
+import com.booking.infrastructure.payment.PaymentTimeoutException;
 import com.booking.infrastructure.redis.RedisUnavailableException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -25,9 +27,9 @@ import java.util.Map;
  * <ul>
  *   <li>409 — 멱등성 키 처리 중 (ADR-006) / 재고 SOLD_OUT (ADR-008)</li>
  *   <li>422 — 멱등성 키 body 변조 (ADR-006)</li>
- *   <li>400 — 도메인 invariant 위반 (ADR-009 PaymentComposition / Bean Validation)</li>
+ *   <li>400 — 도메인 invariant 위반 (ADR-009 PaymentComposition / Bean Validation) / PG 거절 (DECISIONS.md §11 케이스 1)</li>
  *   <li>404 — 존재하지 않는 상품 (REQUIREMENTS §1.1 GET /checkout)</li>
- *   <li>503 — Redis Fail-Closed (ADR-007) / DB UNIQUE 충돌</li>
+ *   <li>503 — Redis Fail-Closed (ADR-007) / DB UNIQUE 충돌 / PG 5XX/timeout (DECISIONS.md §11 케이스 2)</li>
  * </ul>
  */
 @RestControllerAdvice
@@ -57,6 +59,20 @@ public class GlobalExceptionHandler {
     public ResponseEntity<Map<String, String>> handleInvalidComposition(InvalidPaymentCompositionException e) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
             .body(Map.of("message", e.getMessage()));
+    }
+
+    @ExceptionHandler(PaymentRejectedException.class)
+    public ResponseEntity<Map<String, String>> handlePaymentRejected(PaymentRejectedException e) {
+        log.info("[PG_REJECTED] statusCode={} body={}", e.getStatusCode(), e.getResponseBody());
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+            .body(Map.of("message", "결제가 거절되었습니다 — 다른 결제 수단으로 재시도해 주세요"));
+    }
+
+    @ExceptionHandler(PaymentTimeoutException.class)
+    public ResponseEntity<Map<String, String>> handlePaymentTimeout(PaymentTimeoutException e) {
+        log.warn("[PG_TIMEOUT] {}", e.getMessage());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+            .body(Map.of("message", "처리 중 — 잠시 후 결과 확인 부탁드립니다"));
     }
 
     @ExceptionHandler(AccommodationNotFoundException.class)
