@@ -191,15 +191,26 @@ com.booking/
 booking/
 ├── CLAUDE.md                    # Root navigation map (~50 lines)
 ├── README.md                    # 프로젝트 개요·실행
+├── DECISIONS.md                 # Legacy narrative archive (header disclaimer 참조)
 ├── .gitignore
-├── pom.xml / build.gradle       # 빌드 (향후)
+├── .gitattributes               # LF/CRLF + binary 마킹
+├── build.gradle.kts             # Gradle Kotlin DSL (Spring Boot 3.5.x, Java 21)
+├── settings.gradle.kts
+├── gradlew, gradlew.bat         # Gradle wrapper 스크립트
+├── gradle/wrapper/              # gradle-wrapper.jar / .properties
+├── docker-compose.yml           # 기본 — MySQL 8.0 + 단일 Redis (로컬 dev)
+├── docker-compose.sentinel.yml  # ADR-007 — MySQL + Redis Sentinel HA (1M+2R+3S)
+├── docker/
+│   └── sentinel/sentinel.conf   # Sentinel 임계값 (ADR-007 §Decision 정합)
 ├── docs/
 │   ├── CLAUDE.md                # docs/ 작업 시 자동 로드
 │   ├── ARCHITECTURE.md
 │   ├── ERD.md
+│   ├── REQUIREMENTS.md          # 요구사항 단일 출처
 │   ├── TEST_MATRIX.md
 │   ├── CONVENTIONS-FILE.md      # (본 파일)
 │   ├── CONVENTIONS-CODE.md
+│   ├── CONVENTIONS-GIT.md       # branch / commit / PR 컨벤션 단일 출처
 │   ├── adr/
 │   │   ├── DECISIONS.md
 │   │   └── ADR-NNN-*.md
@@ -208,12 +219,19 @@ booking/
 │       ├── feature-NNN-*.md     # active
 │       └── closed/              # 완료 archive
 ├── src/
-│   ├── CLAUDE.md                # 코드 작성 시 자동 로드 (현재 stub)
-│   ├── main/java/com/booking/
-│   │   ├── api/
-│   │   ├── application/
-│   │   ├── domain/
-│   │   └── infrastructure/
+│   ├── CLAUDE.md                # 코드 작성 시 자동 로드 (Spring Boot bootstrap done)
+│   ├── main/
+│   │   ├── java/com/booking/
+│   │   │   ├── BookingApplication.java
+│   │   │   ├── api/
+│   │   │   ├── application/
+│   │   │   ├── domain/
+│   │   │   └── infrastructure/
+│   │   └── resources/
+│   │       ├── application.yml          # default profile
+│   │       ├── application-local.yml    # 로컬 dev (단일 Redis)
+│   │       ├── application-local-sentinel.yml  # 로컬 dev (Sentinel HA)
+│   │       └── db/migration/            # Flyway (V1__init.sql은 첫 entity 작성 시)
 │   └── test/java/com/booking/
 │       ├── <aggregate>/
 │       ├── integration/
@@ -224,14 +242,17 @@ booking/
 │   ├── execute.py
 │   ├── README.md
 │   └── adr_hook.py
-├── load-test/                   # k6 스크립트
+├── load-test/                   # k6 스크립트 (Planned)
 ├── logs/                        # execute.py 산출 (gitignore)
 └── .claude/
-    ├── agents/                  # project-local agents
+    ├── agents/                  # project-local agents (5종)
     │   └── <agent>.md
-    └── commands/                # /command 정의
-        ├── review.md
-        └── adr-sync.md
+    ├── commands/                # /command 정의
+    │   ├── review.md
+    │   └── adr-sync.md
+    ├── skills/                  # 활성화 가능한 skill
+    │   └── git-commit/SKILL.md
+    └── settings.json            # 팀 공용 권한 (settings.local.json은 .gitignore)
 ```
 
 ---
