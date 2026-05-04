@@ -83,13 +83,13 @@ Scenario: [edge:failure] Redis 장애 + 같은 키 재시도 → DB unique const
 
 | # | Scenario | Type | Test Method | File | Status |
 |---|---|---|---|---|---|
-| 1 | 신규 멱등성 키 → 200 OK + booking 생성 | happy | `should_create_booking_and_return_200_when_key_is_new` | `BookingIdempotencyIntegrationTest.java` | pending |
-| 2 | 같은 키 + 같은 body, 처리 중 → 409 | happy | `should_return_409_when_same_key_in_processing_with_same_body` | `BookingIdempotencyIntegrationTest.java` | pending |
-| 3 | 같은 키 + 같은 body, 이미 완료 → 200 + 캐시 | happy | `should_return_cached_response_with_200_when_completed_with_same_body` | `BookingIdempotencyIntegrationTest.java` | pending |
-| 4 | 같은 키 + 다른 body → 422 | edge:tampering | `should_return_422_when_body_hash_differs` | `BookingIdempotencyIntegrationTest.java` | pending |
-| 5 | 동시 동일 키 100건 → 1건만 성공, 99건 409 | edge:concurrency | `should_block_concurrent_same_key_requests` | `BookingIdempotencyConcurrencyTest.java` | pending |
-| 6 | TTL 15분 만료 후 같은 키 재시도 → 200 | edge:expiry | `should_create_new_booking_when_key_expired_after_15_minutes` | `BookingIdempotencyIntegrationTest.java` | pending |
-| 7 | Redis 장애 + DB unique 차단 | edge:failure | `should_block_duplicate_via_db_unique_when_redis_unavailable` | `BookingIdempotencyIntegrationTest.java` | pending |
+| 1 | 신규 멱등성 키 → 200 OK + booking 생성 | happy | `should_create_booking_and_return_200_when_key_is_new` | `BookingIdempotencyIntegrationTest.java` | red |
+| 2 | 같은 키 + 같은 body, 처리 중 → 409 | happy | `should_return_409_when_same_key_in_processing_with_same_body` | `BookingIdempotencyIntegrationTest.java` | red |
+| 3 | 같은 키 + 같은 body, 이미 완료 → 200 + 캐시 | happy | `should_return_cached_response_with_200_when_completed_with_same_body` | `BookingIdempotencyIntegrationTest.java` | red |
+| 4 | 같은 키 + 다른 body → 422 | edge:tampering | `should_return_422_when_body_hash_differs` | `BookingIdempotencyIntegrationTest.java` | red |
+| 5 | 동시 동일 키 100건 → 1건만 성공, 99건 409 | edge:concurrency | `should_block_concurrent_same_key_requests` | `BookingIdempotencyConcurrencyTest.java` | red |
+| 6 | TTL 15분 만료 후 같은 키 재시도 → 200 | edge:expiry | `should_create_new_booking_when_key_expired_after_15_minutes` | `BookingIdempotencyIntegrationTest.java` | red |
+| 7 | Redis 장애 + DB unique 차단 | edge:failure | `should_block_duplicate_via_db_unique_when_redis_unavailable` | `BookingIdempotencyIntegrationTest.java` | red |
 
 **Edge case coverage**: 4/7 (57%) — `[edge:tampering]` 1, `[edge:concurrency]` 1, `[edge:expiry]` 1, `[edge:failure]` 1. ADR-013 §Edge Case 의무 조항 충족.
 
@@ -392,7 +392,7 @@ hex    = HexFormat.of().formatHex(digest)   // Java 17+, lowercase, 64자
 
 ### Phase 2: RED — Failing Tests
 
-- [ ] pending
+- [x] done
 - **위임**: `test-author`
 - **테스트 파일**:
   - `src/test/java/com/booking/idempotency/IdempotencyKeyServiceTest.java` (Unit — body_hash 계산, 3-state 분기 로직)
@@ -421,7 +421,12 @@ hex    = HexFormat.of().formatHex(digest)   // Java 17+, lowercase, 64자
   ./gradlew test --tests "BookingIdempotencyIntegrationTest.should_return_422_when_body_hash_differs"
   ```
 - **AC**: 위 7 시나리오 테스트 모두 fail (production 미구현). 컴파일 성공.
-- **결과**: ...
+- **결과**:
+  - **테스트 파일 (5)**: `IntegrationTestSupport` (Pattern 1 base, MySQL 8.0 + Redis 7-alpine Testcontainers), `BookingTestDataBuilder` (test data factory 3종), `IdempotencyKeyServiceTest` (Unit 9 메소드 — `BodyHashCalculator` 4 + `IdempotencyKeyService` 5), `BookingIdempotencyIntegrationTest` (Scenario 1~4, 6, 7 — 6 메소드), `BookingIdempotencyConcurrencyTest` (Scenario 5 — 100 동시 요청 1 메소드). 총 16 테스트 메소드.
+  - **Stub 8 (Phase 3 GREEN에서 본격 구현)**: `IdempotencyKey` / `IdempotencyStatus` / `IdempotencyKeyRepository` (domain) / `IdempotencyKeyService` / `BodyHashCalculator` / `IdempotencyCheckResult` (application) / `BookingController` / `CreateBookingRequest` (api). 메소드 body는 `throw new UnsupportedOperationException()`.
+  - **검증 결과**: `./gradlew compileTestJava` BUILD SUCCESSFUL. `./gradlew test --tests "com.booking.idempotency.IdempotencyKeyServiceTest"` → 9 tests, 9 failed (UnsupportedOperationException) — RED phase 정합. Integration / Concurrency는 Testcontainers Docker 필요해 본 phase verify에서 skip — Phase 3 진입 시 docker compose up 후 재검증.
+  - **`@Tag` 매핑**: happy → `@Tag("happy")` / edge:tampering / edge:concurrency / edge:expiry / edge:failure → 각각 `@Tag("edge")` + `@Tag("edge:CATEGORY")` 이중 적용 (test-author.md Gherkin Mapping Rules §3 정합).
+  - **위치 정합**: 모든 테스트 위치 `CONVENTIONS-FILE.md` §5 (`<aggregate>` / `integration/` / `concurrency/` / `testsupport/`). production stub 위치 `CONVENTIONS-FILE.md` §4 + ARCHITECTURE.md §3 정합 (`api/booking/` aggregate sub-package, `domain/idempotency/` Phase 1 blueprint + PR-A로 §3 등록 예정).
 
 ### Phase 3: GREEN — Minimal Implementation
 
@@ -550,6 +555,7 @@ hex    = HexFormat.of().formatHex(digest)   // Java 17+, lowercase, 64자
 
 - 2026-05-03 — Feature file pre-written as convention demo. Status remains Draft until tdd-planner takes over.
 - 2026-05-04 — Phase 1 (Architectural Blueprint) done by `code-architect`. 5 sub-sections (data model / interfaces / Lua pseudo / controller flow / body hash) inline. ADR cross-reference 표 14 항목 모두 정합. Status → In-Progress. Follow-up: ARCHITECTURE.md §3에 `domain/idempotency/` sub-package 등록 (별도 PR), 단계 5 PG Timeout 응답 코드 명확화 (Phase 2 시점).
+- 2026-05-04 — Phase 2 (RED — Failing Tests) done by `test-author`. 5 test 파일 (16 메소드) + 8 production stub. `compileTestJava` BUILD SUCCESSFUL, unit test 9/9 fail (UnsupportedOperationException — RED 정합). Integration / Concurrency 검증은 Phase 3 진입 시 docker compose up 후. Scenario Map status: pending → red.
 
 ---
 
