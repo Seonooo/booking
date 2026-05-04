@@ -435,7 +435,7 @@ hex    = HexFormat.of().formatHex(digest)   // Java 17+, lowercase, 64자
 
 #### Phase 3.1: Domain layer GREEN
 
-- [ ] pending
+- [x] done
 - **작성 대상**:
   - `IdempotencyKey` Aggregate (status enum, body_hash 검증 메소드)
   - `IdempotencyKeyRepository` port (interface only)
@@ -447,7 +447,11 @@ hex    = HexFormat.of().formatHex(digest)   // Java 17+, lowercase, 64자
   ./gradlew test --tests IdempotencyKeyTest
   ```
 - **AC**: `IdempotencyKeyTest` GREEN. Service/Integration 테스트는 RED 유지 (다른 레이어 미구현).
-- **결과**: ...
+- **결과**:
+  - `IdempotencyKey.java` GREEN — 모든 필드 final, 생성자 NPE 검증 (5 필드 — idempotencyKey/bodyHash/status/createdAt/expiresAt), `complete(String, long)` 가 새 인스턴스 반환 (immutable aggregate). Phase 1 blueprint §1 데이터 모델 정합 (ERD §4.6 8 필드 매핑).
+  - `IdempotencyStatus`, `IdempotencyKeyRepository` (port) — stub 구조 그대로 유지 (이미 Phase 1 blueprint 정합).
+  - **`IdempotencyKeyTest.java` 신규** — Phase 2 RED 단계에서 누락됐던 도메인 unit test. 5 nested groups (Constructor / Status / BodyHash / Expiration / Complete) × 14 메소드. AssertJ + JUnit 5 nested.
+  - **검증**: `./gradlew test --tests "com.booking.idempotency.IdempotencyKeyTest"` BUILD SUCCESSFUL (14/14 GREEN). `./gradlew test --tests "com.booking.idempotency.IdempotencyKeyServiceTest"` BUILD FAILED (9/9 fail — Service 미구현, RED 유지) — AC 정합.
 
 #### Phase 3.2: Application layer GREEN
 
@@ -556,6 +560,8 @@ hex    = HexFormat.of().formatHex(digest)   // Java 17+, lowercase, 64자
 - 2026-05-03 — Feature file pre-written as convention demo. Status remains Draft until tdd-planner takes over.
 - 2026-05-04 — Phase 1 (Architectural Blueprint) done by `code-architect`. 5 sub-sections (data model / interfaces / Lua pseudo / controller flow / body hash) inline. ADR cross-reference 표 14 항목 모두 정합. Status → In-Progress. Follow-up: ARCHITECTURE.md §3에 `domain/idempotency/` sub-package 등록 (별도 PR), 단계 5 PG Timeout 응답 코드 명확화 (Phase 2 시점).
 - 2026-05-04 — Phase 2 (RED — Failing Tests) done by `test-author`. 5 test 파일 (16 메소드) + 8 production stub. `compileTestJava` BUILD SUCCESSFUL, unit test 9/9 fail (UnsupportedOperationException — RED 정합). Integration / Concurrency 검증은 Phase 3 진입 시 docker compose up 후. Scenario Map status: pending → red.
+- 2026-05-04 — Phase 2 RED 완전 검증 (docker daemon + Testcontainers): Integration 6/6 fail (`AssertionFailedError` — stub 응답 mismatch), Concurrency 1/1 fail. Spring Boot context + MySQL 8.0 + Redis 7-alpine 모두 정상 부팅. Phase 2 RED AC 100% 충족 (16/16 fail + compile pass).
+- 2026-05-04 — Phase 3.1 (Domain GREEN) done. `IdempotencyKey` 본격 구현 (immutable aggregate, complete()→ 새 인스턴스). Phase 2에서 누락됐던 `IdempotencyKeyTest` 보강 작성 (14 메소드 nested). `./gradlew test --tests IdempotencyKeyTest` BUILD SUCCESSFUL. `IdempotencyKeyServiceTest` 여전히 RED (Phase 3.2 영역) — AC 정합.
 
 ---
 
