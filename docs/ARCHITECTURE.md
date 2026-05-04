@@ -120,8 +120,12 @@ com.booking/
 │   ├── outbox/
 │   │   ├── OutboxEvent                # id, event_type, idempotency_key, payload, status, created_at (ADR-010)
 │   │   └── OutboxRepository           # Driven port (persistence)
-│   └── event/
-│       └── EventPublisher             # Driven port — 이벤트 발행 (ADR-010)
+│   ├── event/
+│   │   └── EventPublisher             # Driven port — 이벤트 발행 (ADR-010)
+│   └── idempotency/
+│       ├── IdempotencyKey             # Aggregate (ADR-006) — UUID + bodyHash + status + responsePayload
+│       ├── IdempotencyStatus          # enum: PROCESSING / COMPLETED
+│       └── IdempotencyKeyRepository   # Driven port (persistence)
 │
 └── infrastructure/                     # Driven adapters
     ├── redis/                          # Redis driven adapters
@@ -133,7 +137,8 @@ com.booking/
     ├── persistence/                    # JPA driven adapters
     │   ├── BookingJpaRepository
     │   ├── PaymentJpaRepository
-    │   └── OutboxJpaRepository
+    │   ├── OutboxJpaRepository
+    │   └── IdempotencyKeyJpaRepository # ADR-006 DB 2차 방어선 (UNIQUE constraint)
     ├── event/                          # Event publisher driven adapter
     │   └── InProcessEventPublisher    # EventPublisher 구현체 (ADR-010)
     └── resilience/                     # Cross-cutting (driven adapter 보호)
