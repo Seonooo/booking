@@ -414,11 +414,11 @@ hex    = HexFormat.of().formatHex(digest)   // Java 17+, lowercase, 64자
 - **참고 패턴**: Pattern 5 (3-state 응답 + 동시 동일 키), Pattern 3 (Redis Lua atomic 응용)
 - **검증 커맨드** (모두 실패해야 RED 통과):
   ```bash
-  mvn test -Dtest=IdempotencyKeyServiceTest                       # Unit
-  mvn test -Dtest=BookingIdempotencyIntegrationTest               # Integration (Scenario 1~4, 6, 7)
-  mvn test -Dtest=BookingIdempotencyConcurrencyTest               # Concurrency (Scenario 5)
+  ./gradlew test --tests IdempotencyKeyServiceTest                       # Unit
+  ./gradlew test --tests BookingIdempotencyIntegrationTest               # Integration (Scenario 1~4, 6, 7)
+  ./gradlew test --tests BookingIdempotencyConcurrencyTest               # Concurrency (Scenario 5)
   # 단일 시나리오만:
-  mvn test -Dtest=BookingIdempotencyIntegrationTest#should_return_422_when_body_hash_differs
+  ./gradlew test --tests "BookingIdempotencyIntegrationTest.should_return_422_when_body_hash_differs"
   ```
 - **AC**: 위 7 시나리오 테스트 모두 fail (production 미구현). 컴파일 성공.
 - **결과**: ...
@@ -439,7 +439,7 @@ hex    = HexFormat.of().formatHex(digest)   // Java 17+, lowercase, 64자
   - Repository는 port (interface)만, 구현은 Phase 3.3
 - **검증 커맨드**:
   ```bash
-  mvn test -Dtest=IdempotencyKeyTest
+  ./gradlew test --tests IdempotencyKeyTest
   ```
 - **AC**: `IdempotencyKeyTest` GREEN. Service/Integration 테스트는 RED 유지 (다른 레이어 미구현).
 - **결과**: ...
@@ -456,7 +456,7 @@ hex    = HexFormat.of().formatHex(digest)   // Java 17+, lowercase, 64자
   - PG 호출은 트랜잭션 밖 (CLAUDE.md CRITICAL #1)
 - **검증 커맨드**:
   ```bash
-  mvn test -Dtest=IdempotencyKeyServiceTest
+  ./gradlew test --tests IdempotencyKeyServiceTest
   ```
 - **AC**: `IdempotencyKeyServiceTest` GREEN. Integration 테스트는 여전히 RED.
 - **결과**: ...
@@ -474,8 +474,8 @@ hex    = HexFormat.of().formatHex(digest)   // Java 17+, lowercase, 64자
   - Redis 장애 시 Fail-Closed (ADR-007) — Circuit Breaker OPEN 시 503
 - **검증 커맨드**:
   ```bash
-  mvn test -Dtest=IdempotencyLuaScriptTest        # Slice + Testcontainers Redis
-  mvn test -Dtest=IdempotencyKeyJpaRepositoryTest # Slice + Testcontainers MySQL
+  ./gradlew test --tests IdempotencyLuaScriptTest        # Slice + Testcontainers Redis
+  ./gradlew test --tests IdempotencyKeyJpaRepositoryTest # Slice + Testcontainers MySQL
   ```
 - **AC**: 두 slice 테스트 GREEN. Lua atomic 동작 + DB UNIQUE 충돌 시 적절한 예외.
 - **결과**: ...
@@ -492,9 +492,9 @@ hex    = HexFormat.of().formatHex(digest)   // Java 17+, lowercase, 64자
   - `@Valid` 강제 — 미적용 시 java-reviewer Phase 5에서 차단
 - **검증 커맨드** (Phase 2 RED의 7 시나리오 모두 GREEN 검증):
   ```bash
-  mvn test -Dtest=BookingIdempotencyIntegrationTest
-  mvn test -Dtest=BookingIdempotencyConcurrencyTest
-  mvn test                                              # 기존 테스트 미파괴 확인
+  ./gradlew test --tests BookingIdempotencyIntegrationTest
+  ./gradlew test --tests BookingIdempotencyConcurrencyTest
+  ./gradlew test                                        # 기존 테스트 미파괴 확인
   ```
 - **AC**: Phase 2 RED의 7 시나리오 모두 GREEN. 기존 모든 테스트 미파괴.
 - **결과**: ...
@@ -505,7 +505,7 @@ hex    = HexFormat.of().formatHex(digest)   // Java 17+, lowercase, 64자
 - **위임**: 호출자 (지엽적 — 명명·중복 정리)
 - **검증 커맨드**:
   ```bash
-  mvn test                                                        # 전체 테스트 GREEN 유지
+  ./gradlew test                                                  # 전체 테스트 GREEN 유지
   ```
 - **AC**: 모든 테스트 GREEN 유지. 본 phase에서 새 테스트 추가 금지 (refactor only).
 - **결과**: ...
@@ -518,7 +518,7 @@ hex    = HexFormat.of().formatHex(digest)   // Java 17+, lowercase, 64자
   - `database-reviewer` — `idempotency_key` 테이블 인덱스, expires_at 기반 정리 배치 쿼리
 - **검증 커맨드**:
   ```bash
-  mvn verify                                                      # 전체 통합 (test + integration profile)
+  ./gradlew check                                                 # 전체 통합 (test + integration)
   git diff main...HEAD -- 'src/**/*.java'                         # agent 리뷰 대상
   ```
 - **AC**: agent 리뷰에서 CRITICAL/HIGH 0건. ADR-006의 3-state 응답 분기·body_hash 검증·Fail-Closed 정책 모두 코드에 반영.
@@ -536,8 +536,8 @@ hex    = HexFormat.of().formatHex(digest)   // Java 17+, lowercase, 64자
   - 재고 정확히 1만큼 DECR
 - **검증 커맨드**:
   ```bash
-  mvn test -Dgroups=edge:concurrency                              # 동시성 edge case 전체
-  mvn test -Dtest=BookingIdempotencyConcurrencyTest               # 본 feature만
+  ./gradlew test --tests "com.booking.concurrency.*"              # 동시성 edge case 전체 (concurrency 패키지)
+  ./gradlew test --tests BookingIdempotencyConcurrencyTest               # 본 feature만
   ```
 - **AC**: `should_block_concurrent_same_key_requests` 통과 + 메트릭 충족 (200 정확히 1, 409 정확히 99, DB row 1, stock decrement 1).
 - **결과**: ...
