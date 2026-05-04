@@ -1,0 +1,48 @@
+# Local development infrastructure — MySQL 8.0 + Redis (single node)
+#
+# Usage:
+#   docker compose up -d        # start
+#   docker compose ps           # status (healthy 확인)
+#   docker compose down         # stop (data preserved in named volume)
+#   docker compose down -v      # stop + reset volumes
+#
+# For Redis Sentinel HA setup (ADR-007):
+#   docker compose -f docker-compose.sentinel.yml up -d
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: booking-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootsecret}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-booking}
+      MYSQL_USER: ${MYSQL_USER:-booking}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-booking}
+      TZ: UTC
+    ports:
+      - "3306:3306"
+    volumes:
+      - booking_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-rootsecret}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    container_name: booking-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "PING"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  booking_mysql_data:
+    name: booking_mysql_data

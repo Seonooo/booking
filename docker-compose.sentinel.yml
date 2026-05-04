@@ -1,0 +1,120 @@
+# Redis Sentinel HA local setup (ADR-007) — self-contained
+#
+# MySQL 8.0 + 1 Redis Master + 2 Replicas + 3 Sentinels.
+# Use this when verifying Sentinel client config or failover behaviour.
+#
+# Usage:
+#   docker compose -f docker-compose.sentinel.yml up -d
+#   docker exec booking-sentinel-1 redis-cli -p 26379 SENTINEL masters
+#   docker compose -f docker-compose.sentinel.yml down
+#
+# Spring profile to match: src/main/resources/application-local-sentinel.yml
+#   ./gradlew bootRun --args='--spring.profiles.active=local-sentinel'
+#
+# MySQL data persists in named volume `booking_mysql_data` (shared with
+# docker-compose.yml — switching modes does not lose data). Reset with
+# `docker compose -f docker-compose.sentinel.yml down -v`.
+#
+# Failover smoke note (docker-only caveat):
+#   `docker stop booking-redis-master` removes the container hostname from
+#   docker DNS, which causes Sentinels to lose hostname resolution and enter
+#   TILT mode — failover stalls or takes minutes. This is a docker-network
+#   limitation, NOT a Sentinel bug; in prod the host stays alive and only
+#   the Redis process dies, so DNS keeps resolving.
+#   To smoke-test failover correctly here, freeze the master process while
+#   keeping the container alive:
+#     docker exec booking-redis-master redis-cli DEBUG SLEEP 60
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: booking-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootsecret}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-booking}
+      MYSQL_USER: ${MYSQL_USER:-booking}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-booking}
+      TZ: UTC
+    ports:
+      - "3306:3306"
+    volumes:
+      - booking_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-rootsecret}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+
+  redis-master:
+    image: redis:7-alpine
+    container_name: booking-redis-master
+    command: redis-server --port 6379
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "PING"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis-replica-1:
+    image: redis:7-alpine
+    container_name: booking-redis-replica-1
+    command: redis-server --port 6380 --replicaof redis-master 6379
+    ports:
+      - "6380:6380"
+    depends_on:
+      redis-master:
+        condition: service_healthy
+
+  redis-replica-2:
+    image: redis:7-alpine
+    container_name: booking-redis-replica-2
+    command: redis-server --port 6381 --replicaof redis-master 6379
+    ports:
+      - "6381:6381"
+    depends_on:
+      redis-master:
+        condition: service_healthy
+
+  sentinel-1:
+    image: redis:7-alpine
+    container_name: booking-sentinel-1
+    command: redis-sentinel /etc/redis/sentinel.conf
+    ports:
+      - "26379:26379"
+    volumes:
+      - ./docker/sentinel/sentinel.conf:/etc/redis/sentinel.conf
+    depends_on:
+      redis-master:
+        condition: service_healthy
+
+  sentinel-2:
+    image: redis:7-alpine
+    container_name: booking-sentinel-2
+    command: redis-sentinel /etc/redis/sentinel.conf
+    ports:
+      - "26380:26379"
+    volumes:
+      - ./docker/sentinel/sentinel.conf:/etc/redis/sentinel.conf
+    depends_on:
+      redis-master:
+        condition: service_healthy
+
+  sentinel-3:
+    image: redis:7-alpine
+    container_name: booking-sentinel-3
+    command: redis-sentinel /etc/redis/sentinel.conf
+    ports:
+      - "26381:26379"
+    volumes:
+      - ./docker/sentinel/sentinel.conf:/etc/redis/sentinel.conf
+    depends_on:
+      redis-master:
+        condition: service_healthy
+
+volumes:
+  booking_mysql_data:
+    name: booking_mysql_data

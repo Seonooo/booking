@@ -19,12 +19,31 @@
 
 | 도구 | 용도 | 비고 |
 |---|---|---|
-| Java 17+ | 빌드·실행 | (`pom.xml` / `build.gradle`은 Phase 1 산출 — Planned) |
-| Docker | MySQL 8.0+ / Redis Sentinel 로컬 실행 | `docker-compose.yml` Planned |
-| Maven 또는 Gradle wrapper | 빌드 | `./mvnw` / `./gradlew` (Planned) |
+| Java 21+ | 빌드·실행 | LTS, virtual threads 활용 옵션 |
+| Gradle wrapper (`./gradlew`) | 빌드 | `build.gradle.kts` (Kotlin DSL) — `./gradlew` 자동 다운로드 |
+| Docker / Docker Compose v2+ | MySQL 8.0 / Redis 로컬 실행 | `docker compose up -d` |
 | Python 3.10+ | `scripts/execute.py` 자동화 | 표준 라이브러리만 사용 |
 | Claude CLI | feature-driven TDD 자동 진행 | `scripts/README.md` 참조 |
 | k6 (선택) | 부하 테스트 | `load-test/` Planned |
+
+### 로컬 인프라 실행
+
+두 모드 모두 **단일 명령으로 self-contained** — MySQL + Redis가 한 번에 부팅된다. 모드 전환 시 named volume `booking_mysql_data` 를 공유하므로 데이터는 보존된다.
+
+| 모드 | 명령 | 용도 |
+|---|---|---|
+| **기본** | `docker compose up -d` | MySQL 8.0 + 단일 Redis (가장 빠른 dev loop) |
+| **Sentinel HA** | `docker compose -f docker-compose.sentinel.yml up -d` | ADR-007 운영 토폴로지 — MySQL 8.0 + Redis 1M+2R+3S. Sentinel client config / failover 검증 시 |
+
+Spring Boot 실행:
+```bash
+./gradlew bootRun                                                # local profile (default)
+./gradlew bootRun --args='--spring.profiles.active=local-sentinel'   # Sentinel 모드
+```
+
+데이터 초기화: `docker compose down -v` (또는 `-f docker-compose.sentinel.yml down -v`). 자세한 임계값 / 토폴로지 근거는 `docs/adr/ADR-007-redis-fallback.md` §Decision.
+
+> **Failover smoke 주의**: Sentinel 모드에서 master 다운을 시뮬레이션할 때 `docker stop booking-redis-master` 는 docker DNS에서 hostname을 제거해 Sentinel이 TILT 모드에 빠진다 (운영 환경의 host crash와 다른 docker-only 한계). 정확한 검증은 container를 살린 채 redis 프로세스만 멈추는 방식 권장: `docker exec booking-redis-master redis-cli DEBUG SLEEP 60`.
 
 ---
 
