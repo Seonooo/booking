@@ -3,6 +3,7 @@ package com.booking.api;
 import com.booking.application.AccommodationNotFoundException;
 import com.booking.application.IdempotencyHashMismatchException;
 import com.booking.application.IdempotencyProcessingException;
+import com.booking.application.StockSoldOutException;
 import com.booking.domain.payment.InvalidPaymentCompositionException;
 import com.booking.infrastructure.redis.RedisUnavailableException;
 import org.slf4j.Logger;
@@ -22,7 +23,7 @@ import java.util.Map;
  * HTTP 응답 매핑 (CONVENTIONS-CODE.md §3 / ADR-006 / ADR-007 / ADR-009).
  *
  * <ul>
- *   <li>409 — 멱등성 키 처리 중 (ADR-006)</li>
+ *   <li>409 — 멱등성 키 처리 중 (ADR-006) / 재고 SOLD_OUT (ADR-008)</li>
  *   <li>422 — 멱등성 키 body 변조 (ADR-006)</li>
  *   <li>400 — 도메인 invariant 위반 (ADR-009 PaymentComposition / Bean Validation)</li>
  *   <li>404 — 존재하지 않는 상품 (REQUIREMENTS §1.1 GET /checkout)</li>
@@ -38,6 +39,12 @@ public class GlobalExceptionHandler {
     public ResponseEntity<Map<String, String>> handleProcessing(IdempotencyProcessingException e) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
             .body(Map.of("message", e.getMessage()));
+    }
+
+    @ExceptionHandler(StockSoldOutException.class)
+    public ResponseEntity<Map<String, String>> handleSoldOut(StockSoldOutException e) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+            .body(Map.of("message", "SOLD_OUT — 재고가 모두 소진되었습니다. 새로고침 후 재시도해 주세요."));
     }
 
     @ExceptionHandler(IdempotencyHashMismatchException.class)
