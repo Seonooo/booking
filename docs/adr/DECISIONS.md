@@ -127,6 +127,112 @@ Driven port = `<Aggregate>Repository`, `EventPublisher`, `ExternalPaymentMethod`
 Driven adapter = JpaRepository, InProcessEventPublisher, CardPayment, MockPgClient (infrastructure 구현체).
 Domain은 외부 기술 의존성 0 원칙. ADR-009/010/011이 모두 본 패턴 위에 결정 — 본 ADR이 기반 명시.
 
+### 10. 고가용성 다층 방어 (ADR-005, 007, 008 + 결정의 한계 §1 종합)
+
+설계 capacity 1000 TPS 상한 burst를 견디도록 **진입 → 처리 → 장애 격리 → 무결성 보호** 4층 방어를 직렬 구성한다. 각 층은 다른 위협을 다루며(Defense in Depth), 어떤 층이 무력화되어도 다음 층이 boundary를 보장한다. REQUIREMENTS.md Req 2의 *"DECISIONS.md 기술 항목"* 요구를 본 절로 충족한다.
+
+#### 방어 시퀀스
+
+| 순서 | 층 | 도구 | 커버 위협 | 임계값 / 근거 |
+|---|---|---|---|---|
+| 1 | Rate Limit | userId Token Bucket Lua (ADR-005) | 봇/매크로 동시 다발 시도 | 3/s + burst 5. 5분 윈도우당 ~900회 — 정상 사용자 충분, 봇 무의미 |
+| 2 | 재고 카운터 진입 | Redis atomic DECR Lua (ADR-008) | 초과 판매 / race condition | 정확히 10명만 통과. 결제 실패/TTL 만료 시 INCR 반납 |
+| 3 | Bulkhead | Resilience4j (ADR-007) | Redis slow death 시 Tomcat 스레드 점유 | `maxConcurrentCalls 100` (Tomcat 200의 50%) — 다른 요청 처리 여력 보장 |
+| 4 | Circuit Breaker | Resilience4j TIME_BASED 5초 (ADR-007) | cascading failure / 응답 지연 누적 | `failureRate 50%` / `slowCallDuration 1s` (Redis 정상 5ms 대비 200배) / `waitDurationInOpenState 5s` (Sentinel failover 5~15s 정합) |
+| 종단 | Fail-Closed | 모든 Redis 의존 컴포넌트 503 응답 (ADR-007) | 무결성 훼손 (이중 결제 / 초과 판매) | `Fairness 100% > Availability 99.9%` SLO Decision 의 결과 |
+
+#### 인프라 보조 (계층 1+ 보강)
+
+- **Sentinel HA**: Master 1 + Replica 2 + Sentinel 3 — Master 다운 5~15s 내 자동 failover. `down-after 5초` / `quorum 2` / `min-replicas-to-write 1` (split-brain 방어, ADR-007)
+- **수평 확장 가정**: 인스턴스 4~5대 + 로드 밸런서. 모든 인스턴스가 동일 Redis Master/Replica + 동일 RDB 공유. stateless (세션은 JWT 또는 Redis) — 결정의 한계 §1
+- **분산 락**: Outbox 폴러 / Reconciliation 워커는 ShedLock으로 다중 인스턴스 중복 실행 방지 (ADR-010, ADR-011)
+
+#### TPS burst 흡수 경로
+
+```
+1000 TPS 상한 ─→ [Rate Limit ~900/userId per 5min cap] ─→ [재고 10개 atomic DECR]
+              ─→ [Bulkhead 100 동시 호출] ─→ [Circuit Breaker 50% failureRate / 1s slow]
+              ─→ DB 트랜잭션 (Outbox INSERT 포함, ADR-010)
+                                                    ↓ slow death 감지
+                                                   503 (Fail-Closed)
+```
+
+burst window 1~5분간 누적 ~30만 요청 중 성공 가능 = 재고 10개. 99.997%는 어떤 층에서든 차단되거나 SOLD_OUT 응답을 받는다 (ADR-001 deprecated 분석 그대로 유효).
+
+#### 재검토 트리거
+
+- 평시 TPS가 200 이상으로 증가 → Layer 4 임계값(`minimumNumberOfCalls`, `slidingWindowSize`) 재평가
+- 인스턴스 수가 10대 이상 → Sentinel quorum / `min-replicas-to-write` 재검토
+- 서킷 OPEN 발생 빈도 분기당 10회 이상 → Bulkhead `maxConcurrentCalls` 또는 Tomcat 스레드 풀 확장 검토
+- 단일 userId의 burst 5 토큰이 봇 차단에 부족 → Rate Limit 다층(`IP+userId`) 도입 검토 (ADR-005 옵션 D)
+
+본 절은 ADR-005/007/008 + 결정의 한계 §1 에 분산된 메커니즘을 한 시퀀스로 종합한 것이며, 개별 ADR 본문은 변경하지 않는다.
+
+### 11. 결제 실패 분류와 보상 흐름 (ADR-009, 010, 011 종합)
+
+REQUIREMENTS.md Req 5의 *"결제 실패 대응 로직 + DECISIONS.md 상세 기술"* 요구를 본 절로 충족한다. 결제 실패는 **발생 위치 / 보상 책임 / 사용자 응답**이 모두 다르므로 3종으로 분류해 각각의 흐름을 명시한다.
+
+#### 케이스 1 — PG 거절 (한도 초과 / 카드 정지 / 인증 실패)
+
+```
+PG.execute() → 거절 응답
+└─ DB 트랜잭션 시작 전이라 보상 불필요
+   └─ 재고 INCR (hold 반납)
+      └─ 사용자 응답: 400 + "결제가 거절되었습니다"
+```
+
+- **재고 처리**: 즉시 INCR
+- **멱등성**: 클라이언트 idempotency-key 단위. 동일 키 재시도는 PROCESSING 상태 유지 → 클라이언트 새로고침 후 새 키로 재시도 가능 (ADR-006)
+- **응답**: 400 (도메인 invariant — `docs/CONVENTIONS-CODE.md` §3)
+- **보상 필요 여부**: ❌ 없음
+
+#### 케이스 2 — PG Timeout (응답 미수신, UNKNOWN)
+
+```
+PG.execute() → 10초 timeout
+└─ Booking 상태: PG_PENDING (NOT_FOUND ≠ FAILED, ADR-011)
+   └─ ADR-008 60초 유예 + ADR-011 Reconciliation Worker (6분 trigger, @Scheduled + ShedLock)
+      ├─ PG 상태 조회 → SUCCESS   → BookingStatus = COMPLETED
+      ├─ PG 상태 조회 → FAILED    → BookingStatus = FAILED + StockPort.incr()
+      ├─ PG 상태 조회 → NOT_FOUND → UNKNOWN 유지 + exp backoff 재시도 (N=3)
+      └─ N 초과               → [RECONCILE_FAILED] 로그 + 운영자 에스컬레이션
+```
+
+- **재고 처리**: 6분 trigger 시 reconciliation 결과에 따라 결정 (자동, ADR-011)
+- **멱등성**: PG idempotency key (PaymentAttempt UUID) 로 같은 요청을 PG에 중복 청구하지 않음. Booking 멱등성 키와 PG idempotency 키는 분리된 영역 (ADR-011)
+- **응답**: 일단 응답 hold (사용자에겐 *"처리 중"*). 6분 내 결과 확정 시 push 알림 또는 새로고침 폴링으로 결과 전달
+- **보상 필요 여부**: 자동 워커 (사용자 / 운영자 직접 개입 X). **NOT_FOUND를 즉시 FAILED로 처리하지 않는 게 핵심** — *"청구됨 + 주문 취소"* 최악 케이스 방어 (ADR-011 결정 2)
+
+#### 케이스 3 — DB 커밋 실패 (PG 청구 성공 후)
+
+```
+PG.execute() → 결제 성공
+DB 트랜잭션 → 커밋 실패 (네트워크 / 제약 위반 / Outbox INSERT 실패)
+└─ "PG 청구됨 + DB 없음" 상태 → Saga 보상 (ADR-009)
+   └─ Outbox compensation_payload 활용 → PG 취소 API 호출
+      ├─ 취소 성공 → 재고 INCR + 사용자 응답: 500
+      └─ 취소 실패 → Outbox 폴러 재시도 보장 (ADR-010)
+```
+
+- **재고 처리**: PG 취소 성공 후 INCR
+- **멱등성**: PG 취소 API 호출도 idempotency key 재사용 → 중복 취소 방지 (ADR-010, ADR-011). Outbox 재발송 시 동일 보상 payload 재실행해도 멱등.
+- **응답**: 500 + 운영자 모니터링 마커 `[SAGA_COMPENSATION]`
+- **보상 필요 여부**: ✅ Saga (ADR-009 + Outbox 재시도 ADR-010)
+
+#### 응답 / 재고 / 보상 매핑 표
+
+| 케이스 | HTTP 응답 | 재고 처리 | 멱등성 영역 | 보상 |
+|---|---|---|---|---|
+| 1. PG 거절 | 400 | 즉시 INCR | 클라이언트 idempotency-key | 없음 |
+| 2. PG Timeout | 일시 hold → 결과 push | 6분 후 reconciliation 결과 | PG idempotency key (PaymentAttempt UUID) | 자동 워커 (ADR-011) |
+| 3. DB 커밋 실패 | 500 | Saga 후 INCR | Booking + PG idempotency 동시 | Saga + Outbox 재시도 |
+| (참조) 재고 소진 | 200 SOLD_OUT | N/A | N/A | N/A |
+| (참조) Rate Limit | 429 | N/A | N/A | N/A |
+| (참조) Redis 장애 | 503 | N/A | N/A | N/A |
+| (참조) 멱등성 충돌 | 409 / 422 | N/A | N/A | N/A |
+
+ADR-009 Saga 흐름은 본문에 있으나 *"실패 케이스 분류"* 자체는 분산되어 있어 운영자 / AI / 신규 개발자가 한 번에 파악하기 어려웠다. 본 절은 ADR-009/010/011의 결과를 **사용자 관점 (응답 / 재고 / 보상 책임)** 으로 재배열한 것이며, 개별 ADR 본문은 변경하지 않는다.
+
 ## 핵심 패턴
 
 ### 패턴 1: 4축 분리
