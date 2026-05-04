@@ -1,7 +1,8 @@
 # DECISIONS.md — 주요 설계 쟁점과 선택 근거
 
-> 설계 과정에서 실제로 고민하고 결정한 쟁점들을 기록한다.  
-> 각 결정의 상세 근거는 [docs/adr/](./docs/adr/) 하위 ADR 문서에 있다.
+> **Legacy narrative archive.** 본 문서는 초기 설계 단계 narrative이며, 현재 정합 출처는 [`docs/adr/DECISIONS.md`](./docs/adr/DECISIONS.md) (ADR 인덱스) + 개별 ADR 본문이다.
+> 본문 내 *"1000 TPS"* 분석은 **설계 capacity 상한 기준** 안전성 평가로 읽으며, ADR 본문과 동일하게 보존된다 (관측 환경은 1~5분간 500~1000 TPS 변동 — `docs/adr/DECISIONS.md` §시스템 환경 요약 참조).
+> 신규 결정은 본 파일을 갱신하지 않고 ADR 작성 + `docs/adr/DECISIONS.md` 인덱스 갱신으로 진행한다.
 
 ---
 
