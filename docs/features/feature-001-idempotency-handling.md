@@ -2,7 +2,7 @@
 
 | Status | Owner | Created | Last Updated |
 |---|---|---|---|
-| Draft | TBD | 2026-05-03 | 2026-05-03 |
+| In-Progress | TBD | 2026-05-03 | 2026-05-04 |
 
 > **본 feature는 컨벤션 시연용으로 미리 작성됨**. 실제 구현 시 `tdd-planner`가 Status를 Planning으로 전이하고 Progress Log를 시작.
 
@@ -106,20 +106,289 @@ Scenario: [edge:failure] Redis 장애 + 같은 키 재시도 → DB unique const
 
 ### Phase 1: Architectural Blueprint
 
-- [ ] pending
+- [x] done
 - **위임**: `code-architect`
-- **요청**: 다음을 포함한 blueprint:
-  - `IdempotencyKeyService` (application) — 키 검증·캐싱·3-state 응답 분기
-  - `IdempotencyKeyRepository` (domain port + JPA adapter)
-  - Redis Lua script (SETNX + body_hash 비교, atomic)
-  - `BookingController.create()` 메소드 흐름 (멱등성 → stock DECR → PG → DB)
-  - Body hash 계산 helper (SHA256(userId + productId + amount + paymentMethod + points))
 - **검증 커맨드**:
   ```bash
   git diff --name-only                                    # 코드 변경 0건 (blueprint 문서만)
   ```
 - **AC**: blueprint의 file path가 `docs/ARCHITECTURE.md` 디렉토리 구조에 정합. ERD `idempotency_key` 테이블 컬럼과 도메인 모델 일치.
-- **결과**: ...
+- **결과**:
+
+---
+
+#### 1. 데이터 모델 sketch
+
+##### `IdempotencyKey` — domain aggregate
+`com.booking.domain.idempotency.IdempotencyKey`
+
+ERD §4.6 `idempotency_key` 컬럼과 1:1 매핑. 외부 기술(JPA/Spring) 의존 0.
+
+| 필드 | 타입 | 비고 |
+|---|---|---|
+| `idempotencyKey` | `UUID` | PK — 클라이언트 발급 UUID v4 |
+| `userId` | `long` | 발행 주체 |
+| `bodyHash` | `String` | CHAR(64) — SHA-256 hex |
+| `status` | `IdempotencyStatus` | `PROCESSING` / `COMPLETED` |
+| `responsePayload` | `String` | JSON (nullable — COMPLETED 이후 set) |
+| `bookingId` | `Long` | nullable FK → `booking.id` |
+| `createdAt` | `Instant` | |
+| `expiresAt` | `Instant` | createdAt + 15분 (ADR-006) |
+
+`IdempotencyStatus` enum (`com.booking.domain.idempotency.IdempotencyStatus`): `PROCESSING`, `COMPLETED`
+
+도메인 불변식 메소드 (ADR-014 — domain에 외부 기술 import 금지):
+- `isExpired(Instant now)`: boolean
+- `isBodyHashMatching(String incomingHash)`: boolean
+- `isProcessing()`: boolean
+- `isCompleted()`: boolean
+- `complete(String responsePayload)`: IdempotencyKey — PROCESSING → COMPLETED, 새 인스턴스 반환
+
+##### `IdempotencyKeyJpaEntity` — JPA 매핑 (infrastructure)
+`com.booking.infrastructure.persistence.IdempotencyKeyJpaEntity`
+
+ERD §4.6 DDL과 동일 컬럼. `@Entity`, `@Table(name = "idempotency_key")`. domain `IdempotencyKey`와 상호 변환 메소드(`toDomain()`, `fromDomain()`).
+
+##### Redis key schema (ADR-006 §흐름, ARCHITECTURE.md §7)
+| 항목 | 값 |
+|---|---|
+| Key pattern | `idempotency:{idempotencyKey}` (UUID 문자열) |
+| Value format | `PROCESSING:{bodyHash}` 또는 `COMPLETED:{bodyHash}:{responseJson}` |
+| TTL | 900초 (15분) — ADR-006 |
+
+---
+
+#### 2. 인터페이스 sketch
+
+##### `IdempotencyKeyService` — application layer
+`com.booking.application.IdempotencyKeyService`
+
+CONVENTIONS-CODE.md §2: driving port 구현 또는 use case service. ARCHITECTURE.md §3 `application/` 위치.
+
+```java
+public class IdempotencyKeyService {
+    // Redis 1차 조회+SETNX (Lua atomic, ADR-002) → 3-state 분기
+    public IdempotencyCheckResult checkAndReserve(UUID idempotencyKey, String bodyHash);
+
+    // 결제 완료 후 호출 — Redis COMPLETED 갱신 + DB UPDATE
+    // @Transactional 경계 안에서 DB 갱신, 트랜잭션 후 Redis 갱신
+    public void complete(UUID idempotencyKey, String bodyHash, String responsePayload, long bookingId);
+
+    // Redis 장애 Fail-Closed fallback (ADR-007) — Phase 1 시그니처 sketch
+    private IdempotencyCheckResult redisFallback(UUID key, String hash, Exception e);
+}
+```
+
+`IdempotencyCheckResult` (record, `com.booking.application`):
+
+```java
+public record IdempotencyCheckResult(
+    ResultType type,         // NEW / PROCESSING / COMPLETED / HASH_MISMATCH
+    String cachedResponse    // COMPLETED 시에만 non-null
+) {
+    public enum ResultType { NEW, PROCESSING, COMPLETED, HASH_MISMATCH }
+}
+```
+
+HTTP 응답 매핑 (CONVENTIONS-CODE.md §3):
+| ResultType | HTTP |
+|---|---|
+| NEW | 처리 계속 진행 |
+| PROCESSING | 409 Conflict |
+| COMPLETED | 200 OK + cachedResponse |
+| HASH_MISMATCH | 422 Unprocessable Entity |
+
+##### `IdempotencyKeyRepository` — domain driven port
+`com.booking.domain.idempotency.IdempotencyKeyRepository`
+
+CONVENTIONS-CODE.md §2: `<Aggregate>Repository` 인터페이스, `domain/<aggregate>/` 위치. 외부 기술 import 0 (ADR-014).
+
+```java
+public interface IdempotencyKeyRepository {
+    Optional<IdempotencyKey> findById(UUID idempotencyKey);
+    void save(IdempotencyKey idempotencyKey);
+    void updateToCompleted(UUID idempotencyKey, String responsePayload, long bookingId);
+}
+```
+
+##### `IdempotencyKeyJpaRepository` — infrastructure driven adapter
+`com.booking.infrastructure.persistence.IdempotencyKeyJpaRepository`
+
+CONVENTIONS-CODE.md §2: `<Aggregate>JpaRepository`, `infrastructure/persistence/` 위치. `IdempotencyKeyRepository` 인터페이스 implement. JPA/Spring 의존은 이 계층에만.
+
+DB UNIQUE constraint (idempotency_key PK) 위반 시 `DataIntegrityViolationException` → application layer에서 409로 변환 (Redis 장애 시 DB 2차 방어선, ADR-006).
+
+##### `IdempotencyLuaScript` — infrastructure Redis adapter
+`com.booking.infrastructure.redis.IdempotencyLuaScript`
+
+ARCHITECTURE.md §3 `infrastructure/redis/` 위치. ADR-002 Lua atomic 패턴.
+
+```java
+@Component
+public class IdempotencyLuaScript {
+    // KEYS[1] = idempotency:{key}, ARGV[1] = bodyHash, ARGV[2] = ttlSeconds
+    @CircuitBreaker(name = "redisOps", fallbackMethod = "redisFallback")
+    @Bulkhead(name = "redisOps")
+    public IdempotencyCheckResult execute(UUID key, String bodyHash);
+
+    private IdempotencyCheckResult redisFallback(UUID key, String bodyHash, Exception e);
+    // throws ServiceUnavailableException → 503 (ADR-007 Fail-Closed)
+
+    @CircuitBreaker(name = "redisOps", fallbackMethod = "completeRedisFallback")
+    public void markCompleted(UUID key, String bodyHash, String responsePayload);
+}
+```
+
+---
+
+#### 3. Redis Lua script pseudo (ADR-002 atomic 패턴)
+
+실제 Lua 코드는 Phase 3.3에서 작성. 본 문서는 의사 코드로 흐름만 명세.
+
+파일 위치 (Phase 3.3): `src/main/resources/lua/idempotency_check.lua`
+
+```
+-- KEYS[1] = "idempotency:{uuid}"
+-- ARGV[1] = incomingBodyHash
+-- ARGV[2] = ttlSeconds (900)
+-- Returns: ["NEW"] / ["PROCESSING", storedHash] / ["COMPLETED", storedHash, responseJson] / ["HASH_MISMATCH", storedHash]
+
+local val = redis.call('GET', KEYS[1])
+
+if val == false then
+    -- 키 없음: SETNX (PROCESSING 상태로 저장)
+    local stored = "PROCESSING:" .. ARGV[1]
+    redis.call('SET', KEYS[1], stored, 'EX', tonumber(ARGV[2]), 'NX')
+    -- NX 성공 → NEW 반환, NX 실패(동시 경쟁) → 재조회 후 PROCESSING 반환
+    return {"NEW"}
+end
+
+-- 키 있음: storedStatus, storedHash 파싱 (첫 번째 ":" 구분자)
+if storedHash ~= ARGV[1] then
+    return {"HASH_MISMATCH", storedHash}
+end
+if storedStatus == "PROCESSING" then
+    return {"PROCESSING", storedHash}
+end
+-- storedStatus == "COMPLETED"
+return {"COMPLETED", storedHash, responseJson}
+```
+
+ADR-002 준수 포인트: GET + 상태비교 + SETNX 가 하나의 Lua 스크립트 안에서 실행 — Redis 단일 스레드 보장으로 race condition 0.
+
+---
+
+#### 4. `BookingController.create()` 흐름 시퀀스
+
+ARCHITECTURE.md §5 요청 흐름 + CLAUDE.md CRITICAL #1 (PG 호출은 DB 트랜잭션 밖) 반영.
+
+메소드 시그니처:
+```java
+BookingController.create(
+    @RequestHeader("Idempotency-Key") String rawKey,
+    @Valid @RequestBody CreateBookingRequest request
+)
+```
+
+단계별 흐름:
+
+```
+단계 1  [멱등성 체크 — @Transactional 밖]
+        bodyHash = BodyHashCalculator.calculate(request)
+        result   = IdempotencyKeyService.checkAndReserve(key, bodyHash)
+        ├─ COMPLETED     → 200 OK (result.cachedResponse 반환, 종료)
+        ├─ PROCESSING    → 409 Conflict (종료)
+        └─ HASH_MISMATCH → 422 Unprocessable Entity (종료)
+        Redis 장애       → 503 (ADR-007 Fail-Closed)
+
+단계 2  [Rate Limit — @Transactional 밖]
+        RateLimitService.check(userId) → 429 / 503
+
+단계 3  [재고 DECR — @Transactional 밖]
+        StockService.decrement(productId, userId) → SOLD_OUT 200 / 503
+
+단계 4  [PaymentComposition 생성+검증 — @Transactional 밖]
+        new PaymentComposition(methods)
+        → InvalidPaymentCompositionException → 400
+
+단계 5  [PG 호출 — @Transactional 밖, CRITICAL #1 (ADR-009)]
+        ExternalPaymentMethod.execute(paymentRequest)
+        → PG 거절 → StockService.increment() 후 400
+        → PG Timeout → UNKNOWN 처리, 200 PENDING_CONFIRMATION
+
+단계 6  [@Transactional BEGIN]
+        InternalPaymentMethod.execute()           — 포인트 차감 (있는 경우)
+        bookingRepository.save(booking)           — status: COMPLETED
+        idempotencyKeyRepository.save(ik)         — DB 2차 방어선 (ADR-006)
+        outboxRepository.save(outboxEvent)
+        └─ Outbox INSERT 실패 → rollback X, fallback log [OUTBOX_INSERT_FAILED] (ADR-010)
+        [@Transactional COMMIT]
+
+단계 7  [Redis COMPLETED 갱신 — @Transactional 후]
+        IdempotencyLuaScript.markCompleted(key, bodyHash, responsePayload)
+        Redis 장애 → DB 2차 방어선이 저장됨이므로 warning log (ADR-006)
+
+단계 8  [200 OK 응답]
+```
+
+트랜잭션 경계 요약:
+- `@Transactional` 범위: 단계 6만 (InternalPayment + booking + idempotency_key + outbox INSERT)
+- PG 호출(단계 5): 트랜잭션 밖 — CRITICAL #1 (ADR-009)
+- 멱등성 Redis 조회(단계 1): 트랜잭션 밖 — 처리 전 검증 (ADR-006 §흐름)
+
+---
+
+#### 5. Body hash 알고리즘
+
+ADR-006 §핵심 필드 정의 기준. helper 위치: `com.booking.application.BodyHashCalculator`
+
+입력 필드 (결과에 영향을 주는 모든 차감 자원):
+| 필드 | 타입 | 비고 |
+|---|---|---|
+| `userId` | `long` | 결제 주체 |
+| `productId` | `long` | 결제 대상 (`accommodationId`) |
+| `amount` | `BigDecimal` | 결제 총액 — `toPlainString()` (지수 표기 방지) |
+| `paymentMethod` | `String` | `CARD` / `YPAY` / `POINT` |
+| `points` | `long` | 사용 포인트 (미사용 시 0) |
+
+알고리즘:
+```
+input  = String.valueOf(userId)
+       + "|" + String.valueOf(productId)
+       + "|" + amount.toPlainString()
+       + "|" + paymentMethod.toUpperCase()
+       + "|" + String.valueOf(points)
+
+bytes  = input.getBytes(StandardCharsets.UTF_8)
+digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+hex    = HexFormat.of().formatHex(digest)   // Java 17+, lowercase, 64자
+```
+
+시그니처: `BodyHashCalculator.calculate(CreateBookingRequest request): String`
+
+구분자 `|` 선택 이유: 필드 간 ambiguity 제거 (예: userId=1, productId=23 vs userId=12, productId=3 → 다른 hash 보장).
+
+---
+
+#### 6. ADR Cross-reference 표
+
+| Blueprint 결정 | 근거 ADR / ERD |
+|---|---|
+| Redis 1차 + DB UNIQUE 2차 이중 계층 | ADR-006 §축 2 옵션 C |
+| Lua script atomic (GET + 비교 + SETNX 단일 스크립트) | ADR-002, ADR-006 §흐름 |
+| 3-state 응답 (409 PROCESSING / 200 COMPLETED / 422 HASH_MISMATCH) | ADR-006 §축 4, ERD §4.6 §3-state 응답 분기 |
+| TTL 900초 (15분) | ADR-006 §축 3 옵션 B |
+| Redis 장애 → 503 Fail-Closed | ADR-007 §축 4, CLAUDE.md §SLO Priority |
+| `IdempotencyKeyRepository` interface → `domain/idempotency/` | ADR-014, CONVENTIONS-CODE.md §2 |
+| `IdempotencyKeyJpaRepository` → `infrastructure/persistence/` | ADR-014, CONVENTIONS-CODE.md §2 |
+| `IdempotencyLuaScript` → `infrastructure/redis/` | ARCHITECTURE.md §3 |
+| domain layer 외부 기술 의존 0 | ADR-014 §domain 외부 기술 의존성 0 원칙 |
+| PG 호출은 `@Transactional` 밖 (단계 5) | CLAUDE.md CRITICAL #1, ADR-009 §Saga |
+| `body_hash CHAR(64)`, `status VARCHAR(20)`, `expires_at TIMESTAMP` | ERD §4.6, CONVENTIONS-CODE.md §7 |
+| `idempotency:{uuid}` Redis key pattern | ARCHITECTURE.md §7 |
+| SHA-256(userId|productId|amount|paymentMethod|points) | ADR-006 §핵심 필드 정의 |
+
+정합 미스 없음. ADR/ERD/CONVENTIONS와 모든 결정이 정합됨.
 
 ### Phase 2: RED — Failing Tests
 
@@ -280,6 +549,7 @@ Scenario: [edge:failure] Redis 장애 + 같은 키 재시도 → DB unique const
 (작성 시작 시 한 줄씩 append)
 
 - 2026-05-03 — Feature file pre-written as convention demo. Status remains Draft until tdd-planner takes over.
+- 2026-05-04 — Phase 1 (Architectural Blueprint) done by `code-architect`. 5 sub-sections (data model / interfaces / Lua pseudo / controller flow / body hash) inline. ADR cross-reference 표 14 항목 모두 정합. Status → In-Progress. Follow-up: ARCHITECTURE.md §3에 `domain/idempotency/` sub-package 등록 (별도 PR), 단계 5 PG Timeout 응답 코드 명확화 (Phase 2 시점).
 
 ---
 
