@@ -24,6 +24,8 @@ public class PaymentAttempt {
     private final PaymentAttemptStatus status;
     private final String externalPaymentId;  // nullable — ACKED 이후 set
     private final Instant lastRequestedAt;    // nullable — REQUESTED 이후 set
+    private final Instant lastReconcileAt;    // nullable — Reconciliation worker 진입 후 set
+    private final int reconcileRetryCount;    // ADR-011 — N=3 한계
     private final Instant createdAt;
     private final Instant updatedAt;
 
@@ -31,6 +33,15 @@ public class PaymentAttempt {
                           BigDecimal amount, String paymentCompositionSnapshot,
                           PaymentAttemptStatus status, String externalPaymentId,
                           Instant lastRequestedAt, Instant createdAt, Instant updatedAt) {
+        this(id, attemptId, bookingId, amount, paymentCompositionSnapshot, status,
+            externalPaymentId, lastRequestedAt, null, 0, createdAt, updatedAt);
+    }
+
+    public PaymentAttempt(Long id, UUID attemptId, long bookingId,
+                          BigDecimal amount, String paymentCompositionSnapshot,
+                          PaymentAttemptStatus status, String externalPaymentId,
+                          Instant lastRequestedAt, Instant lastReconcileAt, int reconcileRetryCount,
+                          Instant createdAt, Instant updatedAt) {
         this.attemptId = Objects.requireNonNull(attemptId, "attemptId");
         this.amount = Objects.requireNonNull(amount, "amount");
         this.paymentCompositionSnapshot = Objects.requireNonNull(paymentCompositionSnapshot, "paymentCompositionSnapshot");
@@ -41,6 +52,8 @@ public class PaymentAttempt {
         this.bookingId = bookingId;
         this.externalPaymentId = externalPaymentId;
         this.lastRequestedAt = lastRequestedAt;
+        this.lastReconcileAt = lastReconcileAt;
+        this.reconcileRetryCount = reconcileRetryCount;
     }
 
     public Long getId() { return id; }
@@ -51,6 +64,8 @@ public class PaymentAttempt {
     public PaymentAttemptStatus getStatus() { return status; }
     public String getExternalPaymentId() { return externalPaymentId; }
     public Instant getLastRequestedAt() { return lastRequestedAt; }
+    public Instant getLastReconcileAt() { return lastReconcileAt; }
+    public int getReconcileRetryCount() { return reconcileRetryCount; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
 }

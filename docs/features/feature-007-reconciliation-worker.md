@@ -2,7 +2,7 @@
 
 | Status | Owner | Created | Last Updated |
 |---|---|---|---|
-| Planning | TBD | 2026-05-04 | 2026-05-04 |
+| Review | TBD | 2026-05-04 | 2026-05-04 |
 
 > **Self-contained (ADR-013).** 외부 대화 참조 금지.
 
@@ -69,12 +69,12 @@ Scenario: [edge:boundary] last_reconcile_at < 30s — skip (중복 reconciliatio
 
 | # | Scenario | Type | Test Method | File | Status |
 |---|---|---|---|---|---|
-| 1 | PG SUCCESS → COMPLETED | happy | `should_complete_booking_when_pg_returns_success` | `ReconciliationWorkerIntegrationTest.java` | pending |
-| 2 | PG FAILED → FAILED + stock INCR | happy | `should_fail_booking_and_release_stock_when_pg_returns_failed` | `ReconciliationWorkerIntegrationTest.java` | pending |
-| 3 | NOT_FOUND → UNKNOWN 유지 + retry_count++ | edge:failure | `should_keep_unknown_and_increment_retry_when_pg_not_found` | `ReconciliationWorkerIntegrationTest.java` | pending |
-| 4 | retry_count = 3 → escalation 로그 + UNKNOWN | edge:failure | `should_log_reconcile_failed_when_retry_exhausted` | `ReconciliationWorkerIntegrationTest.java` | pending |
-| 5 | 다중 인스턴스 ShedLock 차단 | edge:concurrency | `should_block_concurrent_workers_via_shedlock` | `ReconciliationWorkerConcurrencyTest.java` | pending |
-| 6 | last_reconcile_at < 30s skip | edge:boundary | `should_skip_when_reconciled_within_30s` | `ReconciliationWorkerIntegrationTest.java` | pending |
+| 1 | PG SUCCESS → COMPLETED | happy | `should_complete_booking_when_pg_returns_success` | `ReconciliationWorkerIntegrationTest.java` | GREEN |
+| 2 | PG FAILED → FAILED + stock INCR | happy | `should_fail_booking_and_release_stock_when_pg_returns_failed` | `ReconciliationWorkerIntegrationTest.java` | GREEN |
+| 3 | NOT_FOUND → UNKNOWN 유지 + retry_count++ | edge:failure | `should_keep_unknown_and_increment_retry_when_pg_not_found` | `ReconciliationWorkerIntegrationTest.java` | GREEN |
+| 4 | retry_count = 3 → escalation 로그 + UNKNOWN | edge:failure | `should_log_reconcile_failed_when_retry_exhausted` | `ReconciliationWorkerIntegrationTest.java` | GREEN |
+| 5 | 다중 인스턴스 ShedLock 차단 | edge:concurrency | `should_block_concurrent_workers_via_shedlock` | `ReconciliationWorkerConcurrencyTest.java` | GREEN |
+| 6 | last_reconcile_at < 30s skip | edge:boundary | `should_skip_when_reconciled_within_30s` | `ReconciliationWorkerIntegrationTest.java` | GREEN |
 
 **Edge case coverage**: 5/6 (83%) — failure ×2, concurrency ×1, boundary ×1. ADR-013 + ADR-011 §핵심 원칙 (NOT_FOUND ≠ FAILED, retry 소진 ≠ FAILED) 검증.
 
@@ -158,3 +158,8 @@ Scenario: [edge:boundary] last_reconcile_at < 30s — skip (중복 reconciliatio
 ## Progress Log
 
 - 2026-05-04 — Plan populated by main claude. feature-006 의 stock.release 의존 명시 (Phase 3.5/3.6 분할). PG 호출 트랜잭션 밖 — TransactionTemplate 분리 (feature-004 패턴).
+- 2026-05-04 — feature-006 (#18) 머지 후 진입 — §Phase 3.6 분할 단순화 (stock.release 본 PR 한 commit 에 통합).
+- 2026-05-04 — Phase 2 RED — 6 test (Scenario 1, 2, 3, 5 fail / Scenario 4, 6 unexpected pass — production stub 정합).
+- 2026-05-04 — Phase 3.1~3.3 GREEN — PaymentStatusResult + ExternalPaymentMethod.queryStatus port + CardPayment.queryStatus 구현 + PaymentAttempt 도메인 컬럼 (lastReconcileAt, reconcileRetryCount) 추가 + findStaleUnknown / incrementRetryCount JPA Query.
+- 2026-05-04 — Phase 3.4 GREEN — ReconciliationService 본격 (TransactionTemplate 분리, 결과별 분기, ADR-011 §핵심 원칙 NOT_FOUND ≠ FAILED + retry 소진 ≠ FAILED).
+- 2026-05-04 — Phase 3.5 GREEN — ReconciliationWorker @Scheduled(fixedDelay=60000) + @SchedulerLock(name="pg-reconciliation"). **6/6 시나리오 GREEN + 전체 ./gradlew test BUILD SUCCESSFUL**.
