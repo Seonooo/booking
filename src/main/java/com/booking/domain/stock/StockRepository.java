@@ -5,15 +5,11 @@ package com.booking.domain.stock;
  *
  * <p>Redis-only 카운터 — RDB 테이블 X (ERD §2.2 *"Stock counter — Redis 데이터(테이블 아님)"*).
  *
- * <p>본 PR scope:
+ * <p>메소드:
  * <ul>
  *   <li>{@link #tryHold} — atomic DECR + hold key SET (Lua atomic, ADR-002).</li>
+ *   <li>{@link #release} — atomic INCR + DEL hold key (idempotent, sweeper / Saga 보상 / Reconciliation 공통).</li>
  *   <li>{@link #init} — test fixture / admin API 진입점.</li>
- * </ul>
- *
- * <p>본 PR 미포함 (out-of-scope, Saga+Outbox feature 와 묶음):
- * <ul>
- *   <li>{@code release} — TTL 만료 sweeper / 결제 실패 재시도 흐름 도입 시점에 추가.</li>
  * </ul>
  */
 public interface StockRepository {
@@ -25,6 +21,13 @@ public interface StockRepository {
      *         또는 같은 사용자 hold key 이미 존재
      */
     boolean tryHold(long accommodationId, long userId, int ttlSeconds);
+
+    /**
+     * atomic 재고 회수 — Lua INCR + DEL hold key. Idempotent — hold key 없으면 INCR 미수행
+     * (over-INCR 차단). 호출자 (sweeper / Saga 보상 / Reconciliation) 가 booking 의 CAS 정합 보장
+     * 후 호출.
+     */
+    void release(long accommodationId, long userId);
 
     /**
      * 재고 초기화 — test fixture / admin API 용.
