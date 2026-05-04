@@ -14,6 +14,16 @@
 # MySQL data persists in named volume `booking_mysql_data` (shared with
 # docker-compose.yml — switching modes does not lose data). Reset with
 # `docker compose -f docker-compose.sentinel.yml down -v`.
+#
+# Failover smoke note (docker-only caveat):
+#   `docker stop booking-redis-master` removes the container hostname from
+#   docker DNS, which causes Sentinels to lose hostname resolution and enter
+#   TILT mode — failover stalls or takes minutes. This is a docker-network
+#   limitation, NOT a Sentinel bug; in prod the host stays alive and only
+#   the Redis process dies, so DNS keeps resolving.
+#   To smoke-test failover correctly here, freeze the master process while
+#   keeping the container alive:
+#     docker exec booking-redis-master redis-cli DEBUG SLEEP 60
 
 services:
   mysql:

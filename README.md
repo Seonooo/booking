@@ -43,6 +43,8 @@ Spring Boot 실행:
 
 데이터 초기화: `docker compose down -v` (또는 `-f docker-compose.sentinel.yml down -v`). 자세한 임계값 / 토폴로지 근거는 `docs/adr/ADR-007-redis-fallback.md` §Decision.
 
+> **Failover smoke 주의**: Sentinel 모드에서 master 다운을 시뮬레이션할 때 `docker stop booking-redis-master` 는 docker DNS에서 hostname을 제거해 Sentinel이 TILT 모드에 빠진다 (운영 환경의 host crash와 다른 docker-only 한계). 정확한 검증은 container를 살린 채 redis 프로세스만 멈추는 방식 권장: `docker exec booking-redis-master redis-cli DEBUG SLEEP 60`.
+
 ---
 
 ## 디렉토리 개요
