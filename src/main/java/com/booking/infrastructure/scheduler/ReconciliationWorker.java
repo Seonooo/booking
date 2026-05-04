@@ -2,6 +2,7 @@ package com.booking.infrastructure.scheduler;
 
 import com.booking.application.ReconciliationService;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -18,6 +19,7 @@ import org.springframework.stereotype.Component;
  * </ul>
  */
 @Component
+@ConditionalOnProperty(prefix = "scheduler.pg-reconciliation", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class ReconciliationWorker {
 
     private final ReconciliationService reconciliationService;
