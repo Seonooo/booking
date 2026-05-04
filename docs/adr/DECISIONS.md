@@ -127,6 +127,47 @@ Driven port = `<Aggregate>Repository`, `EventPublisher`, `ExternalPaymentMethod`
 Driven adapter = JpaRepository, InProcessEventPublisher, CardPayment, MockPgClient (infrastructure 구현체).
 Domain은 외부 기술 의존성 0 원칙. ADR-009/010/011이 모두 본 패턴 위에 결정 — 본 ADR이 기반 명시.
 
+### 10. 고가용성 다층 방어 (ADR-005, 007, 008 + 결정의 한계 §1 종합)
+
+설계 capacity 1000 TPS 상한 burst를 견디도록 **진입 → 처리 → 장애 격리 → 무결성 보호** 4층 방어를 직렬 구성한다. 각 층은 다른 위협을 다루며(Defense in Depth), 어떤 층이 무력화되어도 다음 층이 boundary를 보장한다. REQUIREMENTS.md Req 2의 *"DECISIONS.md 기술 항목"* 요구를 본 절로 충족한다.
+
+#### 방어 시퀀스
+
+| 순서 | 층 | 도구 | 커버 위협 | 임계값 / 근거 |
+|---|---|---|---|---|
+| 1 | Rate Limit | userId Token Bucket Lua (ADR-005) | 봇/매크로 동시 다발 시도 | 3/s + burst 5. 5분 윈도우당 ~900회 — 정상 사용자 충분, 봇 무의미 |
+| 2 | 재고 카운터 진입 | Redis atomic DECR Lua (ADR-008) | 초과 판매 / race condition | 정확히 10명만 통과. 결제 실패/TTL 만료 시 INCR 반납 |
+| 3 | Bulkhead | Resilience4j (ADR-007) | Redis slow death 시 Tomcat 스레드 점유 | `maxConcurrentCalls 100` (Tomcat 200의 50%) — 다른 요청 처리 여력 보장 |
+| 4 | Circuit Breaker | Resilience4j TIME_BASED 5초 (ADR-007) | cascading failure / 응답 지연 누적 | `failureRate 50%` / `slowCallDuration 1s` (Redis 정상 5ms 대비 200배) / `waitDurationInOpenState 5s` (Sentinel failover 5~15s 정합) |
+| 종단 | Fail-Closed | 모든 Redis 의존 컴포넌트 503 응답 (ADR-007) | 무결성 훼손 (이중 결제 / 초과 판매) | `Fairness 100% > Availability 99.9%` SLO Decision 의 결과 |
+
+#### 인프라 보조 (계층 1+ 보강)
+
+- **Sentinel HA**: Master 1 + Replica 2 + Sentinel 3 — Master 다운 5~15s 내 자동 failover. `down-after 5초` / `quorum 2` / `min-replicas-to-write 1` (split-brain 방어, ADR-007)
+- **수평 확장 가정**: 인스턴스 4~5대 + 로드 밸런서. 모든 인스턴스가 동일 Redis Master/Replica + 동일 RDB 공유. stateless (세션은 JWT 또는 Redis) — 결정의 한계 §1
+- **분산 락**: Outbox 폴러 / Reconciliation 워커는 ShedLock으로 다중 인스턴스 중복 실행 방지 (ADR-010, ADR-011)
+
+#### TPS burst 흡수 경로
+
+```
+1000 TPS 상한 ─→ [Rate Limit ~900/userId per 5min cap] ─→ [재고 10개 atomic DECR]
+              ─→ [Bulkhead 100 동시 호출] ─→ [Circuit Breaker 50% failureRate / 1s slow]
+              ─→ DB 트랜잭션 (Outbox INSERT 포함, ADR-010)
+                                                    ↓ slow death 감지
+                                                   503 (Fail-Closed)
+```
+
+burst window 1~5분간 누적 ~30만 요청 중 성공 가능 = 재고 10개. 99.997%는 어떤 층에서든 차단되거나 SOLD_OUT 응답을 받는다 (ADR-001 deprecated 분석 그대로 유효).
+
+#### 재검토 트리거
+
+- 평시 TPS가 200 이상으로 증가 → Layer 4 임계값(`minimumNumberOfCalls`, `slidingWindowSize`) 재평가
+- 인스턴스 수가 10대 이상 → Sentinel quorum / `min-replicas-to-write` 재검토
+- 서킷 OPEN 발생 빈도 분기당 10회 이상 → Bulkhead `maxConcurrentCalls` 또는 Tomcat 스레드 풀 확장 검토
+- 단일 userId의 burst 5 토큰이 봇 차단에 부족 → Rate Limit 다층(`IP+userId`) 도입 검토 (ADR-005 옵션 D)
+
+본 절은 ADR-005/007/008 + 결정의 한계 §1 에 분산된 메커니즘을 한 시퀀스로 종합한 것이며, 개별 ADR 본문은 변경하지 않는다.
+
 ## 핵심 패턴
 
 ### 패턴 1: 4축 분리
