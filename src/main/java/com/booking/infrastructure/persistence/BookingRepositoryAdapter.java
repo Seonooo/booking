@@ -2,6 +2,7 @@ package com.booking.infrastructure.persistence;
 
 import com.booking.domain.booking.Booking;
 import com.booking.domain.booking.BookingRepository;
+import com.booking.domain.booking.BookingStatus;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -22,5 +23,11 @@ public class BookingRepositoryAdapter implements BookingRepository {
     public Booking save(Booking booking) {
         BookingJpaEntity persisted = jpaRepository.save(BookingJpaEntity.fromDomain(booking));
         return persisted.toDomain();
+    }
+
+    @Override
+    @Transactional
+    public int casToStatus(long bookingId, BookingStatus from, BookingStatus to) {
+        return jpaRepository.casToStatus(bookingId, from.name(), to.name());
     }
 }

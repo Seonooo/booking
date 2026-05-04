@@ -4,7 +4,7 @@ import com.booking.domain.idempotency.IdempotencyKey;
 import com.booking.domain.idempotency.IdempotencyKeyRepository;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
-import org.springframework.stereotype.Component;
+import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Optional;
@@ -18,7 +18,7 @@ import java.util.UUID;
  * (JpaRepository&lt;Entity, UUID&gt; vs IdempotencyKeyRepository) 을 회피하고
  * 매핑 책임을 한 곳에 모은다 (ADR-014).
  */
-@Component
+@Repository
 public class IdempotencyKeyRepositoryAdapter implements IdempotencyKeyRepository {
 
     private final IdempotencyKeyJpaRepository jpaRepository;
@@ -47,6 +47,10 @@ public class IdempotencyKeyRepositoryAdapter implements IdempotencyKeyRepository
     @Transactional
     public void save(IdempotencyKey idempotencyKey) {
         entityManager.persist(IdempotencyKeyJpaEntity.fromDomain(idempotencyKey));
+        // 즉시 flush — UNIQUE 위반 시 commit 시점이 아닌 즉시 DataIntegrityViolationException
+        // throw 되어 호출자 (BookingService) 가 정확히 catch / GlobalExceptionHandler 매핑 가능
+        // (deferred INSERT 시 commit 시점에 TransactionSystemException 으로 wrap 되는 문제 회피)
+        entityManager.flush();
     }
 
     @Override
