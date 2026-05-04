@@ -5,6 +5,7 @@ import com.booking.domain.idempotency.IdempotencyKey;
 import com.booking.domain.idempotency.IdempotencyKeyRepository;
 import com.booking.infrastructure.redis.IdempotencyLuaScript;
 import com.booking.infrastructure.redis.RedisUnavailableException;
+import org.springframework.stereotype.Service;
 
 import java.time.Instant;
 import java.util.Optional;
@@ -21,6 +22,7 @@ import java.util.UUID;
  *       이중 결제 차단을 보장.</li>
  * </ol>
  */
+@Service
 public class IdempotencyKeyService {
 
     private final IdempotencyLuaScript luaScript;

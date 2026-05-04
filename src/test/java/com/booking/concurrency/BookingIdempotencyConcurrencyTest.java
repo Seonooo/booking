@@ -15,6 +15,8 @@ import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -38,6 +40,11 @@ class BookingIdempotencyConcurrencyTest extends IntegrationTestSupport {
     static WireMockExtension pgMock = WireMockExtension.newInstance()
             .options(wireMockConfig().port(0))
             .build();
+
+    @DynamicPropertySource
+    static void overridePgUrl(DynamicPropertyRegistry registry) {
+        registry.add("external.pg.url", () -> pgMock.baseUrl());
+    }
 
     @Autowired
     private StringRedisTemplate redisTemplate;

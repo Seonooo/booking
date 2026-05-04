@@ -1,6 +1,10 @@
 package com.booking.integration;
 
 import com.booking.api.booking.dto.CreateBookingRequest;
+import com.booking.application.BodyHashCalculator;
+import com.booking.domain.idempotency.IdempotencyKey;
+import com.booking.domain.idempotency.IdempotencyKeyRepository;
+import com.booking.domain.idempotency.IdempotencyStatus;
 import com.booking.testsupport.BookingTestDataBuilder;
 import com.github.tomakehurst.wiremock.junit5.WireMockExtension;
 import org.junit.jupiter.api.BeforeEach;
@@ -14,7 +18,12 @@ import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
@@ -33,8 +42,19 @@ class BookingIdempotencyIntegrationTest extends IntegrationTestSupport {
             .options(wireMockConfig().port(0))
             .build();
 
+    @DynamicPropertySource
+    static void overridePgUrl(DynamicPropertyRegistry registry) {
+        registry.add("external.pg.url", () -> pgMock.baseUrl());
+    }
+
     @Autowired
     private StringRedisTemplate redisTemplate;
+
+    @Autowired
+    private BodyHashCalculator bodyHashCalculator;
+
+    @Autowired
+    private IdempotencyKeyRepository idempotencyKeyRepository;
 
     private static final String IDEMPOTENCY_KEY = "550e8400-e29b-41d4-a716-446655440000";
     private static final String REDIS_KEY_PREFIX = "idempotency:";
@@ -105,13 +125,13 @@ class BookingIdempotencyIntegrationTest extends IntegrationTestSupport {
     @DisplayName("같은 키 + 같은 body, 처리 중 → 409 Conflict")
     void should_return_409_when_same_key_in_processing_with_same_body() {
         // Given: 멱등성 키가 Redis에 PROCESSING 상태로 존재하고 body_hash 일치
-        //        SHA-256("1001|42|50000.00|CARD|0") — 실제 hash는 production 구현 후 정합
-        String bodyHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        //        production이 계산하는 실제 SHA-256 hash 사용 (test 가 production hash와 정합 보장)
+        CreateBookingRequest request = BookingTestDataBuilder.aDefaultCardRequest();
+        String bodyHash = bodyHashCalculator.calculate(request);
         redisTemplate.opsForValue().set(
                 REDIS_KEY_PREFIX + IDEMPOTENCY_KEY,
                 "PROCESSING:" + bodyHash,
                 900, TimeUnit.SECONDS);
-        CreateBookingRequest request = BookingTestDataBuilder.aDefaultCardRequest();
 
         // When: 사용자가 같은 멱등성 키와 같은 body로 다시 POST /booking 호출
         ResponseEntity<String> response = restTemplate.postForEntity(
@@ -139,13 +159,13 @@ class BookingIdempotencyIntegrationTest extends IntegrationTestSupport {
     @DisplayName("같은 키 + 같은 body, 이미 완료 → 200 OK + 캐시 응답")
     void should_return_cached_response_with_200_when_completed_with_same_body() {
         // Given: 멱등성 키가 Redis에 COMPLETED 상태 + response_payload 캐시됨 + body_hash 일치
-        String bodyHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        CreateBookingRequest request = BookingTestDataBuilder.aDefaultCardRequest();
+        String bodyHash = bodyHashCalculator.calculate(request);
         String cachedPayload = "{\"bookingId\":999,\"status\":\"COMPLETED\"}";
         redisTemplate.opsForValue().set(
                 REDIS_KEY_PREFIX + IDEMPOTENCY_KEY,
                 "COMPLETED:" + bodyHash + ":" + cachedPayload,
                 900, TimeUnit.SECONDS);
-        CreateBookingRequest request = BookingTestDataBuilder.aDefaultCardRequest();
 
         // When: 사용자가 같은 멱등성 키와 같은 body로 다시 POST /booking 호출
         ResponseEntity<String> response = restTemplate.postForEntity(
@@ -246,13 +266,25 @@ class BookingIdempotencyIntegrationTest extends IntegrationTestSupport {
     @Tag("edge:failure")
     @DisplayName("Redis 장애 + DB unique constraint → 이중 booking 차단")
     void should_block_duplicate_via_db_unique_when_redis_unavailable() {
-        // Given: 멱등성 키가 DB idempotency_key 테이블에 COMPLETED로 존재하고
-        //        Redis가 장애 상태 (Circuit Breaker OPEN 시뮬레이션)
-        //        Phase 3 구현 후: Redis 포트를 닫아 OPEN 상태 유발 또는 Resilience4j 설정으로 강제 OPEN
-        //        현재 RED 단계: 테스트는 fail (production 미구현)
-
-        // When: 사용자가 같은 멱등성 키로 POST /booking 호출 (Redis 장애 중)
+        // Given: 멱등성 키가 DB idempotency_key 테이블에 COMPLETED 상태로 존재하지만
+        //        Redis 1차 캐시에는 아직 반영되지 않은 상태 (Redis 장애 직후 / Sentinel
+        //        failover 직후 Redis empty 시나리오 모사). Production 흐름:
+        //          Redis lookup → empty → NEW → PG 호출 → booking save 트랜잭션 →
+        //          idempotency_key INSERT → DB UNIQUE constraint 위반 →
+        //          DataIntegrityViolationException → 503
+        UUID key = UUID.fromString(IDEMPOTENCY_KEY);
         CreateBookingRequest request = BookingTestDataBuilder.aDefaultCardRequest();
+        String bodyHash = bodyHashCalculator.calculate(request);
+        Instant now = Instant.now();
+        idempotencyKeyRepository.save(new IdempotencyKey(
+            key, request.userId(), bodyHash, IdempotencyStatus.COMPLETED,
+            "{\"bookingId\":888,\"status\":\"COMPLETED\"}", null,
+            now, now.plus(15, ChronoUnit.MINUTES)));
+        // Production 이 NEW 분기 → PG 호출까지 도달하므로 PG mock stub 필수
+        pgMock.stubFor(post(urlPathMatching("/payment"))
+                .willReturn(okJson("{\"externalPaymentId\":\"pg-fail-007\",\"status\":\"SUCCESS\"}")));
+
+        // When: 사용자가 같은 멱등성 키로 POST /booking 호출
         ResponseEntity<String> response = restTemplate.postForEntity(
                 "/booking",
                 buildRequestEntity(request),

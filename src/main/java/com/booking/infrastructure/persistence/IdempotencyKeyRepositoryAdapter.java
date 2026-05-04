@@ -2,6 +2,8 @@ package com.booking.infrastructure.persistence;
 
 import com.booking.domain.idempotency.IdempotencyKey;
 import com.booking.domain.idempotency.IdempotencyKeyRepository;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -21,6 +23,9 @@ public class IdempotencyKeyRepositoryAdapter implements IdempotencyKeyRepository
 
     private final IdempotencyKeyJpaRepository jpaRepository;
 
+    @PersistenceContext
+    private EntityManager entityManager;
+
     public IdempotencyKeyRepositoryAdapter(IdempotencyKeyJpaRepository jpaRepository) {
         this.jpaRepository = jpaRepository;
     }
@@ -31,10 +36,17 @@ public class IdempotencyKeyRepositoryAdapter implements IdempotencyKeyRepository
             .map(IdempotencyKeyJpaEntity::toDomain);
     }
 
+    /**
+     * 명시적 INSERT — Spring Data {@code save()} 는 client-set ID 를 *기존*으로
+     * 간주해 merge(UPDATE) 로 동작하므로 ADR-006 §DB 2차 방어선의 UNIQUE 충돌
+     * 의도가 우회된다. {@link EntityManager#persist} 는 INSERT 만 시도하므로 PK
+     * 충돌 시 {@code DataIntegrityViolationException} 으로 변환되어 503 응답을
+     * 거친다 (GlobalExceptionHandler).
+     */
     @Override
     @Transactional
     public void save(IdempotencyKey idempotencyKey) {
-        jpaRepository.save(IdempotencyKeyJpaEntity.fromDomain(idempotencyKey));
+        entityManager.persist(IdempotencyKeyJpaEntity.fromDomain(idempotencyKey));
     }
 
     @Override

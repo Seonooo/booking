@@ -1,6 +1,7 @@
 package com.booking.application;
 
 import com.booking.api.booking.dto.CreateBookingRequest;
+import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -20,6 +21,7 @@ import java.util.Objects;
  * </ul>
  * 출력: lowercase hex 64자 (Java 17+ {@link HexFormat#formatHex(byte[])}).
  */
+@Component
 public class BodyHashCalculator {
 
     private static final String ALGORITHM = "SHA-256";
