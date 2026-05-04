@@ -12,7 +12,9 @@ import com.booking.domain.outbox.OutboxEvent;
 import com.booking.domain.outbox.OutboxEventRepository;
 import com.booking.domain.outbox.OutboxEventStatus;
 import com.booking.domain.payment.ExternalPaymentMethod;
+import com.booking.domain.payment.InvalidPaymentCompositionException;
 import com.booking.domain.payment.PaymentComposition;
+import com.booking.domain.payment.PaymentMethod;
 import com.booking.domain.payment.PaymentRequest;
 import com.booking.domain.payment.PaymentResult;
 import com.booking.domain.payment_attempt.PaymentAttempt;
@@ -29,10 +31,15 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * POST /booking 처리 흐름 (DECISIONS.md §11 / ADR-008 amendment / ADR-009 / ADR-010 / ADR-011).
@@ -80,7 +87,7 @@ public class BookingService {
     private final BookingRepository bookingRepository;
     private final PaymentAttemptRepository paymentAttemptRepository;
     private final OutboxEventRepository outboxEventRepository;
-    private final ExternalPaymentMethod cardPayment;
+    private final Map<String, PaymentMethod> paymentMethodsByType;
     private final StockRepository stockRepository;
     private final SagaCompensationService sagaCompensationService;
     private final ObjectMapper objectMapper;
@@ -92,7 +99,7 @@ public class BookingService {
                           BookingRepository bookingRepository,
                           PaymentAttemptRepository paymentAttemptRepository,
                           OutboxEventRepository outboxEventRepository,
-                          ExternalPaymentMethod cardPayment,
+                          List<PaymentMethod> paymentMethods,
                           StockRepository stockRepository,
                           SagaCompensationService sagaCompensationService,
                           ObjectMapper objectMapper,
@@ -103,7 +110,9 @@ public class BookingService {
         this.bookingRepository = bookingRepository;
         this.paymentAttemptRepository = paymentAttemptRepository;
         this.outboxEventRepository = outboxEventRepository;
-        this.cardPayment = cardPayment;
+        // ADR-009 §4-4 OCP — Map lookup 으로 BookingService 가 결제 수단 추가에 닫힘
+        this.paymentMethodsByType = paymentMethods.stream()
+            .collect(Collectors.toMap(PaymentMethod::getMethodType, Function.identity()));
         this.stockRepository = stockRepository;
         this.sagaCompensationService = sagaCompensationService;
         this.objectMapper = objectMapper;
@@ -128,17 +137,18 @@ public class BookingService {
             throw new StockSoldOutException();
         }
 
-        // PaymentComposition 검증 (혼용 정책)
-        new PaymentComposition(List.of(cardPayment));
+        // 결제 수단 build + PaymentComposition 검증 (혼용 정책 — 외부 1개 초과 불가 invariant)
+        PaymentComposition composition = new PaymentComposition(buildPaymentMethods(request));
 
         // 단계 4 — booking HOLD + paymentAttempt INIT/REQUESTED + booking PG_PENDING (트랜잭션 1)
         BookingPgState state = persistInitialState(idempotencyKey, request);
 
-        // 단계 5 — PG 호출 (트랜잭션 밖)
+        // 단계 5 — PG 호출 (트랜잭션 밖). external amount = total - points (포인트 사용분 제외)
+        BigDecimal externalAmount = request.amount().subtract(BigDecimal.valueOf(request.points()));
         PaymentResult pgResult;
         try {
-            pgResult = cardPayment.execute(
-                new PaymentRequest(request.amount(), state.attemptUuid().toString(), request.userId()));
+            pgResult = composition.executeExternal(
+                new PaymentRequest(externalAmount, state.attemptUuid().toString(), request.userId()));
         } catch (PaymentRejectedException e) {
             finalizeRejected(state);
             idempotencyKeyService.releaseKey(idempotencyKey);
@@ -150,9 +160,10 @@ public class BookingService {
             throw e;
         }
 
-        // 단계 6 — DB persist (DECISIONS.md §11 케이스 3 — DB 실패 시 Saga 보상)
+        // 단계 6 — DB persist + 포인트 차감 (트랜잭션 안). DECISIONS.md §11 케이스 3 — DB 실패 시 Saga 보상
         try {
-            FinalizeOutcome outcome = finalizeSuccess(state, idempotencyKey, request, bodyHash, pgResult);
+            FinalizeOutcome outcome = finalizeSuccess(
+                state, idempotencyKey, request, bodyHash, pgResult, composition);
             // 트랜잭션 commit 후 Redis idempotency complete (캐시 갱신)
             idempotencyKeyService.complete(idempotencyKey, bodyHash, outcome.responseJson(), state.bookingId());
             return BookingFlowResult.fresh(outcome.response());
@@ -162,7 +173,7 @@ public class BookingService {
                 state.bookingId(), pgResult.externalPaymentId(), dbEx.getMessage());
             try {
                 sagaCompensationService.compensate(
-                    pgResult.externalPaymentId(), request.amount(), state.bookingId());
+                    pgResult.externalPaymentId(), externalAmount, state.bookingId());
             } catch (Exception compEx) {
                 // 보상 실패 — fallback 로깅 (운영자 수동 개입 필요)
                 log.error("[SAGA_COMPENSATION_FAILED] bookingId={} externalPaymentId={} compMessage={}",
@@ -170,6 +181,28 @@ public class BookingService {
             }
             throw dbEx; // GlobalExceptionHandler → 503
         }
+    }
+
+    /**
+     * paymentMethod 와 points 입력에 따라 PaymentComposition 의 methods List build.
+     * Map lookup 으로 BookingService 가 *결제 수단 추가에 닫힘* (ADR-009 §4-4 OCP).
+     */
+    private List<PaymentMethod> buildPaymentMethods(CreateBookingRequest request) {
+        String pmType = request.paymentMethod().toUpperCase();
+        PaymentMethod external = paymentMethodsByType.get(pmType);
+        if (!(external instanceof ExternalPaymentMethod)) {
+            throw new InvalidPaymentCompositionException("지원하지 않는 결제 수단: " + pmType);
+        }
+        List<PaymentMethod> methods = new ArrayList<>();
+        methods.add(external);
+        if (request.points() > 0) {
+            PaymentMethod point = paymentMethodsByType.get("POINT");
+            if (point == null) {
+                throw new InvalidPaymentCompositionException("포인트 결제 미설정 — 시스템 오류");
+            }
+            methods.add(point);
+        }
+        return methods;
     }
 
     private BookingPgState persistInitialState(UUID idempotencyKey, CreateBookingRequest request) {
@@ -208,14 +241,14 @@ public class BookingService {
 
     private FinalizeOutcome finalizeSuccess(BookingPgState state, UUID idempotencyKey,
                                             CreateBookingRequest request, String bodyHash,
-                                            PaymentResult pgResult) {
+                                            PaymentResult pgResult, PaymentComposition composition) {
         return transactionTemplate.execute(
-            status -> finalizeSuccessTx(state, idempotencyKey, request, bodyHash, pgResult));
+            status -> finalizeSuccessTx(state, idempotencyKey, request, bodyHash, pgResult, composition));
     }
 
     private FinalizeOutcome finalizeSuccessTx(BookingPgState state, UUID idempotencyKey,
                                               CreateBookingRequest request, String bodyHash,
-                                              PaymentResult pgResult) {
+                                              PaymentResult pgResult, PaymentComposition composition) {
         paymentAttemptRepository.updateToTerminal(state.attemptId(),
             PaymentAttemptStatus.SUCCESS, pgResult.externalPaymentId());
 
@@ -224,6 +257,11 @@ public class BookingService {
         if (cas != 1) {
             throw new IllegalStateException(
                 "Booking CAS COMPLETED failed for id=" + state.bookingId());
+        }
+
+        // 포인트 차감 — 트랜잭션 안 (보상 = 롤백). 본 PR 의 PointPayment 는 Mock (log only)
+        if (request.points() > 0) {
+            composition.executeInternal(request.userId(), request.points());
         }
 
         Instant now = Instant.now();
