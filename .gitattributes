@@ -1,0 +1,19 @@
+# Default — let Git auto-detect text vs binary, store as LF in repo
+* text=auto eol=lf
+
+# Shell scripts must be LF (Unix executable invariant)
+*.sh         text eol=lf
+gradlew      text eol=lf
+
+# Windows-only scripts must be CRLF
+*.bat        text eol=crlf
+*.cmd        text eol=crlf
+gradlew.bat  text eol=crlf
+
+# Binary
+*.jar        binary
+*.png        binary
+*.jpg        binary
+*.gif        binary
+*.ico        binary
+*.zip        binary

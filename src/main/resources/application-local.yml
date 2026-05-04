@@ -1,0 +1,9 @@
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3306/booking?serverTimezone=UTC&characterEncoding=UTF-8
+    username: ${DB_USERNAME:booking}
+    password: ${DB_PASSWORD:booking}
+  data:
+    redis:
+      host: localhost
+      port: 6379
