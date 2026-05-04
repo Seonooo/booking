@@ -4,6 +4,8 @@ import com.booking.application.IdempotencyCheckResult;
 import com.booking.application.IdempotencyCheckResult.ResultType;
 import io.github.resilience4j.bulkhead.annotation.Bulkhead;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
@@ -14,31 +16,46 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Idempotency check + reserve via Redis Lua script (ADR-002 atomic, ADR-006).
+ * Idempotency check + reserve / mark-completed via Redis Lua scripts
+ * (ADR-002 atomic, ADR-006).
  *
  * <p>Resilience4j {@code @CircuitBreaker} + {@code @Bulkhead}({@code redisOps})
- * 으로 wrapping — Sentinel failover / slow death 시 빠르게 차단해
- * Tomcat 스레드 점유를 막고, fallback 으로 {@link RedisUnavailableException} 을
- * throw 해 호출자가 DB 2차 방어선으로 전환할 수 있게 한다 (ADR-007).
- *
- * <p>Lua script 위치: {@code classpath:lua/idempotency_setnx.lua}.
+ * 으로 wrapping — Sentinel failover / slow death 시 빠르게 차단해 Tomcat 스레드
+ * 점유를 막고, fallback 동작은 메소드별로 다르다:
+ * <ul>
+ *   <li>{@link #execute(UUID, String)} — Redis 1차 진입. fallback 시
+ *       {@link RedisUnavailableException} throw → 호출자가 DB 2차 방어선으로
+ *       전환 (ADR-007).</li>
+ *   <li>{@link #markCompleted(UUID, String, String)} — DB 트랜잭션 commit 후 호출.
+ *       Redis 갱신 실패는 DB 가 source of truth 라 정합성 문제 없음 → fallback 에서
+ *       warn log 만 남기고 정상 반환.</li>
+ * </ul>
  */
 @Component
 public class IdempotencyLuaScript {
+
+    private static final Logger log = LoggerFactory.getLogger(IdempotencyLuaScript.class);
 
     private static final String KEY_PREFIX = "idempotency:";
     private static final long DEFAULT_TTL_SECONDS = 900;
 
     private final StringRedisTemplate redisTemplate;
     private final DefaultRedisScript<List> setnxScript;
+    private final DefaultRedisScript<List> completeScript;
 
     @SuppressWarnings({"rawtypes", "unchecked"})
     public IdempotencyLuaScript(StringRedisTemplate redisTemplate) {
         this.redisTemplate = redisTemplate;
+
         this.setnxScript = new DefaultRedisScript<>();
         this.setnxScript.setScriptSource(
             new ResourceScriptSource(new ClassPathResource("lua/idempotency_setnx.lua")));
         this.setnxScript.setResultType(List.class);
+
+        this.completeScript = new DefaultRedisScript<>();
+        this.completeScript.setScriptSource(
+            new ResourceScriptSource(new ClassPathResource("lua/idempotency_complete.lua")));
+        this.completeScript.setResultType(List.class);
     }
 
     @CircuitBreaker(name = "redisOps", fallbackMethod = "executeFallback")
@@ -49,6 +66,21 @@ public class IdempotencyLuaScript {
         List<Object> raw = redisTemplate.execute(setnxScript, keys,
             bodyHash, String.valueOf(DEFAULT_TTL_SECONDS));
         return parseResult(raw);
+    }
+
+    /**
+     * PROCESSING → COMPLETED 전이 (DB 트랜잭션 commit 후 호출).
+     *
+     * <p>Redis 갱신 실패는 DB가 source of truth 이므로 정합성 문제 없음 — 다음 요청
+     * 시 Redis miss → DB 2차 fallback 에서 cached 응답 정상 반환. 따라서 fallback
+     * 은 warn log + 정상 종료.
+     */
+    @CircuitBreaker(name = "redisOps", fallbackMethod = "markCompletedFallback")
+    @Bulkhead(name = "redisOps")
+    public void markCompleted(UUID key, String bodyHash, String responsePayload) {
+        List<String> keys = List.of(KEY_PREFIX + key);
+        redisTemplate.execute(completeScript, keys,
+            bodyHash, responsePayload, String.valueOf(DEFAULT_TTL_SECONDS));
     }
 
     private IdempotencyCheckResult parseResult(List<Object> raw) {
@@ -71,15 +103,15 @@ public class IdempotencyLuaScript {
         };
     }
 
-    /**
-     * Resilience4j fallback — Circuit Breaker OPEN 또는 Bulkhead full 시 호출.
-     *
-     * <p>{@link RedisUnavailableException} 으로 변환해 호출자가 DB 2차 방어선
-     * 또는 503 으로 분기할 수 있게 한다.
-     */
-    @SuppressWarnings("unused") // referenced by @CircuitBreaker fallbackMethod
+    @SuppressWarnings("unused")
     private IdempotencyCheckResult executeFallback(UUID key, String bodyHash, Throwable t) {
         throw new RedisUnavailableException(
             "Redis unavailable for idempotency check (key=" + key + ")", t);
+    }
+
+    @SuppressWarnings("unused")
+    private void markCompletedFallback(UUID key, String bodyHash, String responsePayload, Throwable t) {
+        log.warn("[REDIS_MARK_COMPLETED_FALLBACK] key={} (DB is source of truth, next request will fallback to DB)",
+            key, t);
     }
 }

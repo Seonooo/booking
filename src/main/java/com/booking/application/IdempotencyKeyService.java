@@ -80,15 +80,17 @@ public class IdempotencyKeyService {
     }
 
     /**
-     * 결제 완료 후 DB UPDATE (PROCESSING → COMPLETED + responsePayload + bookingId).
+     * 결제 완료 후 DB UPDATE + Redis 캐시 갱신 (ADR-006 §흐름).
      *
-     * <p>Redis 캐시 갱신은 Phase 3.4 또는 후속 phase 에서
-     * {@code IdempotencyLuaScript.markCompleted} 가 추가될 때 본 메소드 직후에
-     * 호출한다 (ADR-006 §흐름 — DB commit 후 Redis 갱신).
-     *
-     * @param bodyHash Phase 3.3+ Redis 갱신 시 storedHash 일치 검증용 — 현재 unused
+     * <p>호출 순서:
+     * <ol>
+     *   <li>DB UPDATE — source of truth 1차. 호출자의 {@code @Transactional} 컨텍스트 안에서 실행.</li>
+     *   <li>Redis markCompleted — Lua atomic 으로 PROCESSING → COMPLETED + responsePayload 캐시.
+     *       호출자의 트랜잭션 commit 후 실행되도록 호출자가 보장. Redis 실패는 warn log 만 (DB 가 source of truth).</li>
+     * </ol>
      */
     public void complete(UUID idempotencyKey, String bodyHash, String responsePayload, long bookingId) {
         idempotencyKeyRepository.updateToCompleted(idempotencyKey, responsePayload, bookingId);
+        luaScript.markCompleted(idempotencyKey, bodyHash, responsePayload);
     }
 }
