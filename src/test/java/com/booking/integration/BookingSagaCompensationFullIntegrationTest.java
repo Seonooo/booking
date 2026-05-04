@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -31,20 +32,17 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
 
 /**
- * Integration 테스트 — Saga 보상 (Scenario 5).
+ * Integration 테스트 — Saga 보상 본격 (Scenario 4).
  *
- * <p>DECISIONS.md §11 케이스 3 — *PG 성공 + DB 커밋 실패 → fallback 로깅 + 503*.
- * PG cancel 호출 본격은 feature-005 영역. 본 시나리오는 *fallback 로깅 마커 + booking 미생성 + 503* 만 검증.
+ * <p>DECISIONS.md §11 케이스 3 — PG 성공 후 DB 커밋 실패 → SagaCompensationService 호출 →
+ * PG cancel API + booking PG_PENDING → FAILED CAS + stock release.
  *
- * <p>{@link IdempotencyKeyRepository} {@code @MockitoBean} 으로 stub — save() throw 시
- * BookingService.finalizeSuccess 트랜잭션 롤백 + 503 반환하는지 검증. mock 위치를
- * BookingRepository 가 아닌 IdempotencyKeyRepository 로 잡은 이유: *PG 호출 후 DB 실패*
- * 시점이 finalizeSuccess 트랜잭션 안의 idempotencyKeyRepository.save 단계 — 이 단계 throw
- * 시 finalizeSuccess 의 paymentAttempt UPDATE / booking CAS / outbox INSERT 모두 롤백.
+ * <p>기존 BookingSagaCompensationTest (feature-004) 는 *fallback 로깅* 만 검증. 본 PR 의 시나리오는
+ * *PG cancel API 호출 1회* + *booking FAILED* + *stock INCR* 까지 본격 검증.
  *
- * <p>Source: docs/features/feature-004-saga-booking-flow.md
+ * <p>Source: docs/features/feature-005-outbox-poller-saga-compensation.md
  */
-class BookingSagaCompensationTest extends IntegrationTestSupport {
+class BookingSagaCompensationFullIntegrationTest extends IntegrationTestSupport {
 
     @RegisterExtension
     static WireMockExtension pgMock = WireMockExtension.newInstance()
@@ -62,6 +60,11 @@ class BookingSagaCompensationTest extends IntegrationTestSupport {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
+    @Autowired
+    private StringRedisTemplate redisTemplate;
+
+    private static final String STOCK_KEY = "stock:accommodation:42";
+
     private HttpEntity<CreateBookingRequest> buildRequestEntity(String key, CreateBookingRequest body) {
         HttpHeaders headers = new HttpHeaders();
         headers.set("Idempotency-Key", key);
@@ -69,18 +72,16 @@ class BookingSagaCompensationTest extends IntegrationTestSupport {
         return new HttpEntity<>(body, headers);
     }
 
-    // =========================================================================
-    // Scenario 5: [edge:failure] PG 성공 + DB 실패 → fallback 로깅 + 503
-    // =========================================================================
-
     @Test
     @Tag("edge")
     @Tag("edge:failure")
-    @DisplayName("PG 성공 + DB 실패 → finalizeSuccess 롤백 + booking PG_PENDING + 503")
-    void should_log_saga_compensation_marker_when_db_fails_after_pg_success() {
-        // Given: PG 성공 응답 + IdempotencyKeyRepository.save() throw (finalizeSuccess 트랜잭션 안)
+    @DisplayName("PG 성공 + DB 실패 → Saga 보상 (PG cancel + booking FAILED + stock INCR)")
+    void should_invoke_pg_cancel_when_db_commit_fails_after_pg_success() {
+        // Given: PG /payment SUCCESS + /payment/cancel SUCCESS, IdempotencyKeyRepository.save throw
         pgMock.stubFor(post(urlPathMatching("/payment"))
-                .willReturn(okJson("{\"externalPaymentId\":\"pg-saga-005\",\"status\":\"SUCCESS\"}")));
+                .willReturn(okJson("{\"externalPaymentId\":\"pg-saga-comp\",\"status\":\"SUCCESS\"}")));
+        pgMock.stubFor(post(urlPathMatching("/payment/cancel"))
+                .willReturn(okJson("{\"status\":\"CANCELLED\"}")));
         doThrow(new DataIntegrityViolationException("mock DB failure after PG success"))
                 .when(idempotencyKeyRepository).save(any());
 
@@ -93,31 +94,24 @@ class BookingSagaCompensationTest extends IntegrationTestSupport {
                 buildRequestEntity(idempotencyKey, request),
                 String.class);
 
-        // Then: HTTP 503
+        // Then: HTTP 503 + PG cancel 1회 + booking FAILED + stock INCR
         assertThat(response.getStatusCode())
                 .as("DB 실패 → 503")
                 .isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
 
-        // persistInitialState 트랜잭션은 commit 됨 — booking 1건 PG_PENDING + paymentAttempt 1건 REQUESTED.
-        // finalizeSuccess 트랜잭션이 idempotency save 단계에서 throw → 롤백 → COMPLETED 진입 못 함.
-        // outbox / idempotency_key DB row 0건. PG 청구 실제 발생.
-        // Saga 보상 (PG cancel + booking → FAILED CAS) 은 feature-005 영역.
-        Long bookingPgPendingCount = jdbcTemplate.queryForObject(
-            "SELECT COUNT(*) FROM booking WHERE status = 'PG_PENDING'", Long.class);
-        assertThat(bookingPgPendingCount)
-                .as("booking PG_PENDING 1건 (persistInitialState commit, finalizeSuccess 롤백)")
+        // PG cancel API 1회 호출 — Saga 보상의 핵심 검증
+        pgMock.verify(1, postRequestedFor(urlPathMatching("/payment/cancel")));
+
+        // booking FAILED 1건 (Saga 보상의 PG_PENDING → FAILED CAS)
+        Long failedCount = jdbcTemplate.queryForObject(
+            "SELECT COUNT(*) FROM booking WHERE status = 'FAILED'", Long.class);
+        assertThat(failedCount)
+                .as("booking PG_PENDING → FAILED (Saga 보상 CAS)")
                 .isEqualTo(1);
 
-        Long paRequestedCount = jdbcTemplate.queryForObject(
-            "SELECT COUNT(*) FROM payment_attempt WHERE status = 'REQUESTED'", Long.class);
-        assertThat(paRequestedCount)
-                .as("paymentAttempt REQUESTED 1건")
-                .isEqualTo(1);
-
-        Long outboxCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM outbox_event", Long.class);
-        assertThat(outboxCount).as("outbox_event 미생성 (finalizeSuccess 롤백)").isEqualTo(0);
-
-        // PG mock 1회 호출 — PG 청구 실제 발생 (운영자 확인 + 보상 필요, feature-005)
-        pgMock.verify(1, postRequestedFor(urlPathMatching("/payment")));
+        // stock INCR — Saga 보상의 stock release (9 → 10)
+        assertThat(redisTemplate.opsForValue().get(STOCK_KEY))
+                .as("stock release (Saga 보상)")
+                .isEqualTo("10");
     }
 }

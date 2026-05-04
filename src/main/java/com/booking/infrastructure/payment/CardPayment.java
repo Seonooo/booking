@@ -83,13 +83,25 @@ public class CardPayment implements ExternalPaymentMethod {
     }
 
     /**
-     * Saga 보상 — DB 트랜잭션 실패 / Reconciliation 시 PG 취소 API 호출.
-     * feature-005 영역. 본 PR 미호출.
+     * Saga 보상 — DB 트랜잭션 실패 시 PG 취소 API 호출 (ADR-009 §Saga).
+     *
+     * <p>{@code POST /payment/cancel} — externalPaymentId 기준 취소. 부분 취소 가능
+     * (cancelAmount 파라미터 — 본 PR 은 전액 취소).
+     *
+     * @throws PgCancelFailedException PG cancel API 호출 실패 — Outbox 재시도가 후속 보장
      */
     @Override
     public void cancel(String paymentKey, long cancelAmount) {
-        throw new UnsupportedOperationException(
-            "CardPayment.cancel — feature-005 Saga 보상 영역. 본 PR 미호출.");
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("externalPaymentId", paymentKey);
+        body.put("cancelAmount", cancelAmount);
+        try {
+            restTemplate.postForObject(pgUrl + "/payment/cancel", body, Map.class);
+            log.info("[PG_CANCEL_OK] externalPaymentId={} cancelAmount={}", paymentKey, cancelAmount);
+        } catch (RestClientException e) {
+            log.error("[PG_CANCEL_FAILED] externalPaymentId={} message={}", paymentKey, e.getMessage(), e);
+            throw new PgCancelFailedException("PG cancel failed: " + e.getMessage(), e);
+        }
     }
 
     /**
