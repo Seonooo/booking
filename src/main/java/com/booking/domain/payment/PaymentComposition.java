@@ -50,6 +50,22 @@ public class PaymentComposition {
         return external.execute(request);
     }
 
+    /**
+     * 내부 결제 (포인트) 호출 — methods 안의 모든 InternalPaymentMethod 의 execute 호출.
+     *
+     * <p>본 PR scope — 모든 internal method 가 같은 amount 사용 (단일 포인트 차감 가정).
+     * 다중 internal method (예: 포인트 + 쿠폰) 분배는 future — `Map<PaymentMethod, BigDecimal>`
+     * 시그니처 도입 검토.
+     *
+     * <p>호출자 (BookingService) 는 본 메소드를 {@code @Transactional} 안에서 호출 — 보상 = 트랜잭션 롤백.
+     */
+    public void executeInternal(long userId, long amount) {
+        methods.stream()
+            .filter(m -> m instanceof InternalPaymentMethod)
+            .map(InternalPaymentMethod.class::cast)
+            .forEach(m -> m.execute(userId, amount));
+    }
+
     public List<PaymentMethod> getMethods() {
         return methods;
     }
