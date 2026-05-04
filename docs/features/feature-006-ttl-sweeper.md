@@ -2,7 +2,7 @@
 
 | Status | Owner | Created | Last Updated |
 |---|---|---|---|
-| Planning | TBD | 2026-05-04 | 2026-05-04 |
+| Review | TBD | 2026-05-04 | 2026-05-04 |
 
 > **Self-contained (ADR-013).** 외부 대화 참조 금지.
 
@@ -57,10 +57,10 @@ Scenario: [edge:failure] booking 이미 COMPLETED — sweep skip (CAS row_count=
 
 | # | Scenario | Type | Test Method | File | Status |
 |---|---|---|---|---|---|
-| 1 | HOLD 5분 초과 → sweep + INCR | happy | `should_sweep_expired_hold_and_release_stock` | `BookingHoldSweeperIntegrationTest.java` | pending |
-| 2 | HOLD 4분 → skip | edge:boundary | `should_skip_when_hold_within_ttl` | `BookingHoldSweeperIntegrationTest.java` | pending |
-| 3 | 다중 인스턴스 ShedLock 중복 차단 | edge:concurrency | `should_block_concurrent_sweepers_via_shedlock` | `BookingHoldSweeperConcurrencyTest.java` | pending |
-| 4 | COMPLETED 이미 전이 — CAS skip | edge:failure | `should_skip_sweep_when_booking_already_completed` | `BookingHoldSweeperIntegrationTest.java` | pending |
+| 1 | HOLD 5분 초과 → sweep + INCR | happy | `should_sweep_expired_hold_and_release_stock` | `BookingHoldSweeperIntegrationTest.java` | GREEN |
+| 2 | HOLD 4분 → skip | edge:boundary | `should_skip_when_hold_within_ttl` | `BookingHoldSweeperIntegrationTest.java` | GREEN |
+| 3 | 다중 인스턴스 ShedLock 중복 차단 | edge:concurrency | `should_block_concurrent_sweepers_via_shedlock` | `BookingHoldSweeperConcurrencyTest.java` | GREEN |
+| 4 | COMPLETED 이미 전이 — CAS skip | edge:failure | `should_skip_sweep_when_booking_already_completed` | `BookingHoldSweeperIntegrationTest.java` | GREEN |
 
 **Edge case coverage**: 3/4 (75%) — boundary / concurrency / failure. ADR-013 + ADR-008 의무 충족.
 
@@ -140,3 +140,8 @@ Scenario: [edge:failure] booking 이미 COMPLETED — sweep skip (CAS row_count=
 ## Progress Log
 
 - 2026-05-04 — Plan populated by main claude. HOLD vs PG_PENDING 분리 vs 단일 360s query 결정 — *권장 단일 360s* (Reconciliation worker 가 PG_PENDING 정확 처리).
+- 2026-05-04 — Phase 2 RED — 4 test (Scenario 1, 3 fail RED / Scenario 2, 4 unexpected pass — production stub 의 변경 없음 흐름과 일치). @DynamicPropertySource cache key 정합 추가.
+- 2026-05-04 — Phase 3.1 GREEN — lua/stock_release.lua + StockRepository.release port + StockRedisAdapter.release 구현 (idempotent INCR + DEL).
+- 2026-05-04 — Phase 3.2 GREEN — BookingRepository.findStaleByStatusBatch + findById port + JPA Query + Adapter.
+- 2026-05-04 — Phase 3.3 GREEN — BookingHoldSweepService 본격. CAS row_count==1 일 때만 stock release (over-INCR 차단).
+- 2026-05-04 — Phase 3.4 GREEN — BookingHoldSweeper @Scheduled(fixedDelay=30000) + @SchedulerLock(name="booking-hold-sweeper"). **4/4 시나리오 GREEN + 전체 ./gradlew test BUILD SUCCESSFUL**.

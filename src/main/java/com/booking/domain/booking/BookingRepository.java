@@ -16,4 +16,14 @@ public interface BookingRepository {
      * @return 1 = 전이 성공, 0 = 다른 thread 가 이미 전이 또는 row 없음
      */
     int casToStatus(long bookingId, BookingStatus from, BookingStatus to);
+
+    /**
+     * id 로 booking 조회 — sweeper / Saga 보상 / Reconciliation 의 정보 조회용.
+     */
+    java.util.Optional<Booking> findById(long bookingId);
+
+    /**
+     * TTL sweeper 후보 조회 — status IN (HOLD, PG_PENDING) AND created_at &lt; threshold ORDER BY created_at LIMIT.
+     */
+    java.util.List<Booking> findStaleByStatusBatch(java.time.Instant threshold, int limit);
 }
