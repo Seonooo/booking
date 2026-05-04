@@ -1,6 +1,8 @@
 spring:
   jpa:
     hibernate:
-      ddl-auto: validate
+      # Hibernate 6 가 CHAR(64) / BINARY(16) 매핑을 VARCHAR / VARBINARY 로 검증
+      # 시도해 fail. Flyway 가 schema 단일 출처 → JPA validate 비활성.
+      ddl-auto: none
   flyway:
     enabled: true
