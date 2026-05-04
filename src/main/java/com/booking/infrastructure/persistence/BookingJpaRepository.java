@@ -21,4 +21,16 @@ public interface BookingJpaRepository extends JpaRepository<BookingJpaEntity, Lo
     int casToStatus(@Param("id") long id,
                     @Param("from") String from,
                     @Param("to") String to);
+
+    /**
+     * TTL sweeper 후보 조회 — booking.status IN (HOLD, PG_PENDING) AND created_at &lt; threshold.
+     * ORDER BY created_at — 가장 오래된 row 먼저 sweep. idx_booking_status_updated 사용.
+     */
+    @Query(value = "SELECT * FROM booking " +
+        "WHERE status IN ('HOLD', 'PG_PENDING') AND created_at < :threshold " +
+        "ORDER BY created_at LIMIT :batchLimit",
+        nativeQuery = true)
+    java.util.List<BookingJpaEntity> findStaleByStatusBatch(
+        @Param("threshold") java.time.Instant threshold,
+        @Param("batchLimit") int batchLimit);
 }

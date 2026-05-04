@@ -6,6 +6,10 @@ import com.booking.domain.booking.BookingStatus;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
+import java.util.List;
+import java.util.Optional;
+
 /**
  * Driven adapter — domain port {@link BookingRepository} 구현체 (ADR-014).
  */
@@ -29,5 +33,17 @@ public class BookingRepositoryAdapter implements BookingRepository {
     @Transactional
     public int casToStatus(long bookingId, BookingStatus from, BookingStatus to) {
         return jpaRepository.casToStatus(bookingId, from.name(), to.name());
+    }
+
+    @Override
+    public Optional<Booking> findById(long bookingId) {
+        return jpaRepository.findById(bookingId).map(BookingJpaEntity::toDomain);
+    }
+
+    @Override
+    public List<Booking> findStaleByStatusBatch(Instant threshold, int limit) {
+        return jpaRepository.findStaleByStatusBatch(threshold, limit).stream()
+            .map(BookingJpaEntity::toDomain)
+            .toList();
     }
 }
