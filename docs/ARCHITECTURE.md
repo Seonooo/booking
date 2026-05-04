@@ -12,7 +12,8 @@
 | 항목 | 값 |
 |------|-----|
 | 평시 트래픽 | 50 TPS |
-| 자정 burst | 1000 TPS (5분간) |
+| 자정 burst (관측) | 1~5분간 500~1000 TPS 변동 |
+| 설계 capacity 기준 | 1000 TPS 상한 (race / circuit breaker / pool sizing 분석은 이 상한 기준) |
 | 재고 | 10개 한정 |
 | 결제 수단 | 신용카드, Y페이, Y포인트 (복합 결제 일부 가능) |
 | 핵심 SLO | **Fairness 100% > Availability 99.9%** |

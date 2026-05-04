@@ -26,6 +26,7 @@
 
 - **정합성**: 00시 트래픽 집중 상황에서 미달/초과판매 **0건** 보장.
 - **공정성**: 모든 사용자가 동등한 확률로 상품을 구매할 수 있는 구조.
+- **수량**: 자정 오픈 burst 윈도우 동안 단일 상품군 **10개 한정** (`docs/adr/DECISIONS.md` §시스템 환경 요약 / `docs/ARCHITECTURE.md` §1 정합).
 
 ### Req 2. 고가용성
 
@@ -33,7 +34,8 @@
 - **`DECISIONS.md` 기술 항목**.
 - **TPS 프로파일**:
   - 평시: **50 TPS**
-  - 자정 프로모션 burst: **1~5분간 500~1000 TPS**
+  - 자정 burst (관측): 1~5분간 **500~1000 TPS 변동**
+  - 설계 capacity 기준: **1000 TPS 상한** (모든 race / circuit breaker / pool sizing 분석은 이 상한 기준)
 
 ### Req 3. 멱등성 처리
 
@@ -79,7 +81,7 @@
   - 다층 방어 (Rate Limit → 재고 카운터 → Bulkhead → Circuit Breaker → Fail-Closed)
   - TPS burst 흡수 경로
   - 인스턴스 수평 확장 가정
-- 시스템 환경 요약의 *"1000 TPS burst"* 를 *"500~1000 TPS burst"* 로 정정.
+- 시스템 환경 요약의 *"1000 TPS burst"* 표현은 **관측 환경 (500~1000 TPS 변동) + 설계 capacity (상한 1000) 두 차원으로 분리** 명시. 본 작업으로 `docs/adr/DECISIONS.md` / `docs/ARCHITECTURE.md` / `.claude/agents/` Project Context 동기화 완료.
 
 ### Gap B — 결제 실패 대응 흐름 미정리 (Req 5)
 

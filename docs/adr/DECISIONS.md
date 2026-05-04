@@ -8,7 +8,7 @@
 
 ## 시스템 환경 요약
 
-- **트래픽**: 평시 50 TPS, 자정 5분간 1000 TPS burst
+- **트래픽**: 평시 50 TPS, 자정 burst 1~5분간 **500~1000 TPS 변동** (관측). 설계 capacity 기준 **1000 TPS 상한** (race / circuit breaker / pool sizing 분석은 이 상한 기준).
 - **재고**: 초특가 숙소 10개 한정 (자정 오픈)
 - **결제 수단**: 신용카드, Y페이, Y포인트 (복합 결제 일부 가능)
 - **인프라**: 분산 환경, Spring Boot, Redis, RDB, PG 연동
@@ -184,7 +184,7 @@ ADR-013에서 결정됨 — Mixed Test-First, 5분류, Testcontainers + WireMock
 
 **전제할 가정**:
 - 본 시스템은 단일 코드베이스이지만 **다중 인스턴스 수평 확장**을 가정한다.
-- 1000 TPS burst 처리를 위해 인스턴스 4~5대 + 로드 밸런서 구성을 가정.
+- 설계 capacity **1000 TPS 상한** burst 처리를 위해 인스턴스 4~5대 + 로드 밸런서 구성을 가정.
 - 모든 인스턴스는 동일 Redis Master/Replica, 동일 RDB를 공유.
 - 세션은 stateless (JWT 또는 Redis 세션) 가정. 인스턴스 간 sticky session 없음.
 
@@ -222,7 +222,7 @@ ADR-013에서 결정됨 — Mixed Test-First, 5분류, Testcontainers + WireMock
 - RDB는 **MySQL 8.0+ (또는 MariaDB 10.6+)** 가정. 본 시스템 요구사항(MySQL/MariaDB 한정) 준수.
 - 본 환경에서 `SELECT ... FOR UPDATE SKIP LOCKED`, `JSON` 타입, `INSERT ... ON DUPLICATE KEY UPDATE` 모두 지원되어 ADR-008/010 패턴 충족.
 - HikariCP Connection Pool 사용, 인스턴스당 30~50 connection 가정.
-- 1000 TPS burst 시 DB write 부하는 인스턴스 분산으로 완화.
+- 설계 capacity **1000 TPS 상한** burst 시 DB write 부하는 인스턴스 분산으로 완화.
 - 향후 Read Replica 도입 시 booking 조회는 Replica로, write는 Master로 분리 가능.
 
 **AI/개발자가 주의할 점**:
@@ -253,7 +253,7 @@ ADR-013에서 결정됨 — Mixed Test-First, 5분류, Testcontainers + WireMock
 **전제할 가정**:
 - 단위 테스트는 Mockito 등으로 외부 의존성 mocking.
 - 통합 테스트는 Testcontainers로 실제 Redis/DB 띄움.
-- 부하 테스트는 k6 또는 Gatling으로 1000 TPS 시뮬레이션.
+- 부하 테스트는 k6 또는 Gatling으로 **상한 1000 TPS 시뮬레이션** (variant: 500~1000 TPS 변동 시나리오 권장).
 - 카오스 테스트는 운영 환경 진입 전 별도 단계.
 
 **AI/개발자가 주의할 점**:
