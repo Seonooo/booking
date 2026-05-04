@@ -151,7 +151,7 @@ ADR-013 §Test-first 의무 영역에 해당하면 RED phase 강제:
 ## Project Context (booking system)
 
 - **Stack**: Spring Boot, Java 17+, MySQL 8.0+, Redis Sentinel HA, 외부 PG (mock)
-- **트래픽**: 평시 50 TPS, 자정 1000 TPS burst
+- **트래픽**: 평시 50 TPS, 자정 burst 1~5분간 500~1000 TPS (관측), 설계 capacity 1000 TPS 상한
 - **핵심 SLO**: Fairness 100% > Availability 99.9%
 - **단일 소스**:
   - 방법론·매트릭스: `docs/adr/ADR-013-tdd-strategy.md`

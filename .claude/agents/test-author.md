@@ -577,7 +577,7 @@ class IdempotencyResponseTest {
 ## Project Context (booking system)
 
 - **Stack**: Spring Boot 3.x, Java 17+, MySQL 8.0+, Redis Sentinel, 외부 PG (mock)
-- **트래픽**: 평시 50 TPS, 자정 1000 TPS burst
+- **트래픽**: 평시 50 TPS, 자정 burst 1~5분간 500~1000 TPS (관측), 설계 capacity 1000 TPS 상한
 - **단일 소스**:
   - 방법론·매트릭스: `docs/adr/ADR-013-tdd-strategy.md`
   - 도메인·DDL: `docs/ERD.md` — DDL은 §8을 Testcontainers init script로 활용

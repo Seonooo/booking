@@ -115,7 +115,7 @@ mysql -e "SHOW ENGINE INNODB STATUS\G"
 ## Project Context (booking system)
 
 - **DB**: MySQL 8.0+ (또는 MariaDB 10.6+) — DECISIONS.md 결정의 한계 #3 참조
-- **트래픽**: 평시 50 TPS, 자정 1000 TPS burst (5분)
+- **트래픽**: 평시 50 TPS, 자정 burst 1~5분간 500~1000 TPS (관측), 설계 capacity 1000 TPS 상한 (5분간)
 - **핵심 패턴**:
   - Outbox 폴러: `SELECT ... FOR UPDATE SKIP LOCKED` + ShedLock (ADR-010)
   - Consumer Idempotency: `INSERT ... ON DUPLICATE KEY UPDATE col = col` (ADR-010)
