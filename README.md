@@ -19,12 +19,31 @@
 
 | 도구 | 용도 | 비고 |
 |---|---|---|
-| Java 17+ | 빌드·실행 | (`pom.xml` / `build.gradle`은 Phase 1 산출 — Planned) |
-| Docker | MySQL 8.0+ / Redis Sentinel 로컬 실행 | `docker-compose.yml` Planned |
-| Maven 또는 Gradle wrapper | 빌드 | `./mvnw` / `./gradlew` (Planned) |
+| Java 21+ | 빌드·실행 | LTS, virtual threads 활용 옵션 |
+| Gradle wrapper (`./gradlew`) | 빌드 | `build.gradle.kts` (Kotlin DSL) — `./gradlew` 자동 다운로드 |
+| Docker / Docker Compose v2+ | MySQL 8.0 / Redis 로컬 실행 | `docker compose up -d` |
 | Python 3.10+ | `scripts/execute.py` 자동화 | 표준 라이브러리만 사용 |
 | Claude CLI | feature-driven TDD 자동 진행 | `scripts/README.md` 참조 |
 | k6 (선택) | 부하 테스트 | `load-test/` Planned |
+
+### 로컬 인프라 실행
+
+| 모드 | 명령 | 용도 |
+|---|---|---|
+| **기본** | `docker compose up -d` | MySQL 8.0 + 단일 Redis (가장 빠른 dev loop) |
+| **Sentinel HA** | `docker compose -f docker-compose.sentinel.yml up -d` | ADR-007 운영 토폴로지(1M+2R+3S). Sentinel client config / failover 검증 시 |
+
+기본 모드 — Spring Boot 실행:
+```bash
+./gradlew bootRun                                              # local profile (default)
+```
+
+Sentinel 모드 — Spring Boot 실행 (`application-local-sentinel.yml`):
+```bash
+./gradlew bootRun --args='--spring.profiles.active=local-sentinel'
+```
+
+데이터 영속화: MySQL은 named volume `booking_mysql_data` 에 보존됨. 초기화 시 `docker compose down -v`. 자세한 임계값 / 토폴로지 근거는 `docs/adr/ADR-007-redis-fallback.md` §Decision.
 
 ---
 
