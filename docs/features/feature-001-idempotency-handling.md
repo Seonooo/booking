@@ -83,13 +83,13 @@ Scenario: [edge:failure] Redis 장애 + 같은 키 재시도 → DB unique const
 
 | # | Scenario | Type | Test Method | File | Status |
 |---|---|---|---|---|---|
-| 1 | 신규 멱등성 키 → 200 OK + booking 생성 | happy | `should_create_booking_and_return_200_when_key_is_new` | `BookingIdempotencyIntegrationTest.java` | red |
-| 2 | 같은 키 + 같은 body, 처리 중 → 409 | happy | `should_return_409_when_same_key_in_processing_with_same_body` | `BookingIdempotencyIntegrationTest.java` | red |
-| 3 | 같은 키 + 같은 body, 이미 완료 → 200 + 캐시 | happy | `should_return_cached_response_with_200_when_completed_with_same_body` | `BookingIdempotencyIntegrationTest.java` | red |
-| 4 | 같은 키 + 다른 body → 422 | edge:tampering | `should_return_422_when_body_hash_differs` | `BookingIdempotencyIntegrationTest.java` | red |
-| 5 | 동시 동일 키 100건 → 1건만 성공, 99건 409 | edge:concurrency | `should_block_concurrent_same_key_requests` | `BookingIdempotencyConcurrencyTest.java` | red |
-| 6 | TTL 15분 만료 후 같은 키 재시도 → 200 | edge:expiry | `should_create_new_booking_when_key_expired_after_15_minutes` | `BookingIdempotencyIntegrationTest.java` | red |
-| 7 | Redis 장애 + DB unique 차단 | edge:failure | `should_block_duplicate_via_db_unique_when_redis_unavailable` | `BookingIdempotencyIntegrationTest.java` | red |
+| 1 | 신규 멱등성 키 → 200 OK + booking 생성 | happy | `should_create_booking_and_return_200_when_key_is_new` | `BookingIdempotencyIntegrationTest.java` | green |
+| 2 | 같은 키 + 같은 body, 처리 중 → 409 | happy | `should_return_409_when_same_key_in_processing_with_same_body` | `BookingIdempotencyIntegrationTest.java` | green |
+| 3 | 같은 키 + 같은 body, 이미 완료 → 200 + 캐시 | happy | `should_return_cached_response_with_200_when_completed_with_same_body` | `BookingIdempotencyIntegrationTest.java` | green |
+| 4 | 같은 키 + 다른 body → 422 | edge:tampering | `should_return_422_when_body_hash_differs` | `BookingIdempotencyIntegrationTest.java` | green |
+| 5 | 동시 동일 키 100건 → 1건만 성공, 99건 409 | edge:concurrency | `should_block_concurrent_same_key_requests` | `BookingIdempotencyConcurrencyTest.java` | green |
+| 6 | TTL 15분 만료 후 같은 키 재시도 → 200 | edge:expiry | `should_create_new_booking_when_key_expired_after_15_minutes` | `BookingIdempotencyIntegrationTest.java` | green |
+| 7 | Redis 장애 + DB unique 차단 | edge:failure | `should_block_duplicate_via_db_unique_when_redis_unavailable` | `BookingIdempotencyIntegrationTest.java` | green |
 
 **Edge case coverage**: 4/7 (57%) — `[edge:tampering]` 1, `[edge:concurrency]` 1, `[edge:expiry]` 1, `[edge:failure]` 1. ADR-013 §Edge Case 의무 조항 충족.
 
@@ -505,7 +505,7 @@ hex    = HexFormat.of().formatHex(digest)   // Java 17+, lowercase, 64자
 
 #### Phase 3.4: API + Integration GREEN
 
-- [ ] pending
+- [x] done
 - **작성 대상**:
   - `BookingController.create()` (멱등성 키 검증 진입 흐름)
   - `BookingRequest` DTO + `@Valid` Bean Validation
@@ -520,7 +520,16 @@ hex    = HexFormat.of().formatHex(digest)   // Java 17+, lowercase, 64자
   ./gradlew test                                        # 기존 테스트 미파괴 확인
   ```
 - **AC**: Phase 2 RED의 7 시나리오 모두 GREEN. 기존 모든 테스트 미파괴.
-- **결과**: ...
+- **결과**:
+  - **결제 확장성 (ADR-009 옵션 iv)**: 두 계층 Strategy interface (`PaymentMethod` / `ExternalPaymentMethod` / `InternalPaymentMethod`) + `PaymentComposition` Domain VO (혼용 정책 invariant 활성) + `CardPayment` 단일 구현 (`infrastructure/payment/`, ADR-014 재배치). 후속 Y페이 / 포인트 / 카카오페이 추가 시 *신규 파일 1개* (ADR-009 §4-4 OCP 측정).
+  - **Booking 도메인 minimal**: `Booking` aggregate (immutable, 8 필드 ERD §4.1 매핑) + `BookingStatus` enum (HOLD / PG_PENDING / COMPLETED / FAILED / UNKNOWN — 본 PR 활성: COMPLETED) + `BookingRepository` port + `BookingJpaEntity` / `BookingJpaRepository` / `BookingRepositoryAdapter` (`@Component`).
+  - **Redis complete Lua**: `idempotency_complete.lua` (PROCESSING → COMPLETED atomic) + `IdempotencyLuaScript.markCompleted` (Resilience4j wrap, fallback warn log only — DB가 source of truth) + `IdempotencyKeyService.complete` Redis 통합 (DB 1차 → Redis 2차).
+  - **API + Validation + Exception**: `BookingController.create` (`@RequestHeader UUID Idempotency-Key` + `@Valid CreateBookingRequest`) + `BookingResponse` DTO + `GlobalExceptionHandler` (409 / 422 / 400 / 503 매핑 — `IdempotencyProcessingException` / `IdempotencyHashMismatchException` / `InvalidPaymentCompositionException` / `RedisUnavailableException` / `DataIntegrityViolationException` / Bean Validation / type mismatch).
+  - **테스트 fixture**: `IntegrationTestSupport.@BeforeEach seedAndCleanFixtures` (FK 의존 순서 cleanup + users(1001) + accommodation(42) seed). `BookingIdempotencyIntegrationTest` / `ConcurrencyTest` `@DynamicPropertySource` 로 `external.pg.url` → WireMock baseUrl 주입. Scenario 2/3/7 hash 정정 (production `BodyHashCalculator` 결과 직접 사용).
+  - **인프라 정정 (의존 변경)**:
+    - `PaymentConfig` `RestTemplate` `SimpleClientHttpRequestFactory` 명시 (Spring Boot 3.5 + Java 21 default JDK HttpClient HTTP/2 → WireMock HTTP/1.1 mismatch RST_STREAM 회피)
+    - `IdempotencyKeyRepositoryAdapter.save` `EntityManager.persist` 명시 (Spring Data `save` merge 동작 → ADR-006 §DB 2차 방어선 UNIQUE 충돌 contract 우회 회피)
+  - **검증**: `./gradlew test` BUILD SUCCESSFUL — 누적 **42 GREEN** (unit 23 + slice 12 + integration 6 + concurrency 1). Phase 3.4 AC 100% 충족.
 
 ### Phase 4: REFACTOR
 
@@ -577,6 +586,7 @@ hex    = HexFormat.of().formatHex(digest)   // Java 17+, lowercase, 64자
 - 2026-05-04 — Phase 2 RED 완전 검증 (docker daemon + Testcontainers): Integration 6/6 fail (`AssertionFailedError` — stub 응답 mismatch), Concurrency 1/1 fail. Spring Boot context + MySQL 8.0 + Redis 7-alpine 모두 정상 부팅. Phase 2 RED AC 100% 충족 (16/16 fail + compile pass).
 - 2026-05-04 — Phase 3.1 (Domain GREEN) done. `IdempotencyKey` 본격 구현 (immutable aggregate, complete()→ 새 인스턴스). Phase 2에서 누락됐던 `IdempotencyKeyTest` 보강 작성 (14 메소드 nested). `./gradlew test --tests IdempotencyKeyTest` BUILD SUCCESSFUL. `IdempotencyKeyServiceTest` 여전히 RED (Phase 3.2 영역) — AC 정합.
 - 2026-05-04 — Phase 3.2 (Application GREEN) done. `IdempotencyKeyService` checkAndReserve 5-step 분기 (empty/expired→NEW, hash mismatch, PROCESSING, COMPLETED+cached) + complete delegate. `BodyHashCalculator` SHA-256 hex 64자 (HexFormat.of()) + `|` 구분자 ambiguity 차단. unit test 23/23 GREEN (domain 14 + service/calculator 9). Integration / Concurrency 여전히 RED (Phase 3.3+ 영역) — AC 정합.
+- 2026-05-04 — Phase 3.4 (API + Integration GREEN) done. 4 sub-commit + 1 meta. **결제 확장성 옵션 (iv) 채택** — 두 계층 Strategy interface + PaymentComposition VO + CardPayment 1 구현 (ADR-009 §결제 확장성, 후속 Y페이/포인트/카카오페이 = 신규 파일 1개). Booking 도메인 minimal (immutable aggregate + JPA adapter), Redis complete Lua (markCompleted + Resilience4j fallback warn), BookingService 8단계 흐름 (CRITICAL #1 PG ↔ DB 트랜잭션 분리), GlobalExceptionHandler (409/422/400/503), Bean Validation. 인프라 정정 2건: PaymentConfig RestTemplate HTTP/1.1 강제 (Spring Boot 3.5 + Java 21 default HTTP/2 vs WireMock 1.1 mismatch), IdempotencyKeyRepositoryAdapter.save → EntityManager.persist 명시 (Spring Data save merge 동작 회피, ADR-006 §DB 2차 방어선 UNIQUE 충돌 contract 보존). Scenario Map status: red → green (7 시나리오 모두). 누적 42 GREEN.
 - 2026-05-04 — Phase 3.3 (Infrastructure GREEN) done. Flyway V1 baseline 9 테이블 (ERD §8) + JPA adapter 3종 (Entity + JpaRepository + RepositoryAdapter, port impl) + Redis Lua (idempotency_setnx.lua + IdempotencyLuaScript + RedisUnavailableException) + Resilience4j config (redisOps CB + Bulkhead, ADR-007 §Decision). Service-Lua 통합 — checkAndReserve Lua 1차 → RedisUnavailableException catch → DB 2차 fallback. `application-test.yml` ddl-auto validate→none 정정 (Hibernate 6 + body_hash CHAR(64) 매핑 fail 회피, Flyway 단일 출처). 검증: unit 23 + slice 12 = 35 GREEN (`IdempotencyKeyServiceTest` + `IdempotencyKeyTest` + `IdempotencyKeyJpaRepositoryTest` + `IdempotencyLuaScriptTest`). Integration / Concurrency 여전히 부분 RED (Controller 미구현, Phase 3.4 영역).
 
 ---
