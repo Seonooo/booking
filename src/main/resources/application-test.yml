@@ -8,3 +8,14 @@ spring:
       ddl-auto: none
   flyway:
     enabled: true
+
+# @Scheduled worker 비활성 — test 가 직접 pollBatch / sweepBatch / reconcileBatch 호출
+# 자동 trigger 와 test 호출 사이의 SELECT FOR UPDATE SKIP LOCKED lock 충돌 회피.
+# production application.yml 에선 default true (matchIfMissing=true).
+scheduler:
+  outbox-poller:
+    enabled: false
+  booking-hold-sweeper:
+    enabled: false
+  pg-reconciliation:
+    enabled: false
