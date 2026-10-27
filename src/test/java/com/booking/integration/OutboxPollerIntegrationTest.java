@@ -1,9 +1,9 @@
 package com.booking.integration;
 
+import com.booking.application.OutboxPollService;
 import com.booking.domain.outbox.OutboxEvent;
 import com.booking.domain.outbox.OutboxEventRepository;
 import com.booking.domain.outbox.OutboxEventStatus;
-import com.booking.infrastructure.scheduler.OutboxPoller;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -33,7 +33,7 @@ class OutboxPollerIntegrationTest extends IntegrationTestSupport {
     }
 
     @Autowired
-    private OutboxPoller poller;
+    private OutboxPollService pollService;
 
     @Autowired
     private OutboxEventRepository outboxRepository;
@@ -57,7 +57,7 @@ class OutboxPollerIntegrationTest extends IntegrationTestSupport {
     void should_publish_pending_outbox_and_mark_published() {
         long outboxId = insertPendingOutbox(UUID.randomUUID(), "{\"bookingId\":1}");
 
-        poller.pollBatch();
+        pollService.pollBatch();
 
         String status = jdbcTemplate.queryForObject(
             "SELECT status FROM outbox_event WHERE id = ?", String.class, outboxId);
@@ -90,7 +90,7 @@ class OutboxPollerIntegrationTest extends IntegrationTestSupport {
                 "VALUES (?, 'LoggingConsumer', 'DONE', NOW(), NOW())",
             outboxId);
 
-        poller.pollBatch();
+        pollService.pollBatch();
 
         // outbox 는 PUBLISHED 로 전이 (폴러 가 처리)
         String outboxStatus = jdbcTemplate.queryForObject(

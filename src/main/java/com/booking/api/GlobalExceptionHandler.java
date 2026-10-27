@@ -1,5 +1,6 @@
 package com.booking.api;
 
+import com.booking.api.dto.ErrorResponse;
 import com.booking.application.AccommodationNotFoundException;
 import com.booking.application.IdempotencyHashMismatchException;
 import com.booking.application.IdempotencyProcessingException;
@@ -19,8 +20,6 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
-import java.util.Map;
-
 /**
  * HTTP 응답 매핑 (CONVENTIONS-CODE.md §3 / ADR-006 / ADR-007 / ADR-009).
  *
@@ -31,6 +30,8 @@ import java.util.Map;
  *   <li>404 — 존재하지 않는 상품 (REQUIREMENTS §1.1 GET /checkout)</li>
  *   <li>503 — Redis Fail-Closed (ADR-007) / DB UNIQUE 충돌 / PG 5XX/timeout (DECISIONS.md §11 케이스 2)</li>
  * </ul>
+ *
+ * <p>응답 body 는 {@link ErrorResponse} record — type-safe + Swagger/OpenAPI 자동 문서화.
  */
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -38,54 +39,54 @@ public class GlobalExceptionHandler {
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
     @ExceptionHandler(IdempotencyProcessingException.class)
-    public ResponseEntity<Map<String, String>> handleProcessing(IdempotencyProcessingException e) {
+    public ResponseEntity<ErrorResponse> handleProcessing(IdempotencyProcessingException e) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
-            .body(Map.of("message", e.getMessage()));
+            .body(new ErrorResponse(e.getMessage()));
     }
 
     @ExceptionHandler(StockSoldOutException.class)
-    public ResponseEntity<Map<String, String>> handleSoldOut(StockSoldOutException e) {
+    public ResponseEntity<ErrorResponse> handleSoldOut(StockSoldOutException e) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
-            .body(Map.of("message", "SOLD_OUT — 재고가 모두 소진되었습니다. 새로고침 후 재시도해 주세요."));
+            .body(new ErrorResponse("SOLD_OUT — 재고가 모두 소진되었습니다. 새로고침 후 재시도해 주세요."));
     }
 
     @ExceptionHandler(IdempotencyHashMismatchException.class)
-    public ResponseEntity<Map<String, String>> handleHashMismatch(IdempotencyHashMismatchException e) {
+    public ResponseEntity<ErrorResponse> handleHashMismatch(IdempotencyHashMismatchException e) {
         return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
-            .body(Map.of("message", e.getMessage()));
+            .body(new ErrorResponse(e.getMessage()));
     }
 
     @ExceptionHandler(InvalidPaymentCompositionException.class)
-    public ResponseEntity<Map<String, String>> handleInvalidComposition(InvalidPaymentCompositionException e) {
+    public ResponseEntity<ErrorResponse> handleInvalidComposition(InvalidPaymentCompositionException e) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-            .body(Map.of("message", e.getMessage()));
+            .body(new ErrorResponse(e.getMessage()));
     }
 
     @ExceptionHandler(PaymentRejectedException.class)
-    public ResponseEntity<Map<String, String>> handlePaymentRejected(PaymentRejectedException e) {
+    public ResponseEntity<ErrorResponse> handlePaymentRejected(PaymentRejectedException e) {
         log.info("[PG_REJECTED] statusCode={} body={}", e.getStatusCode(), e.getResponseBody());
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-            .body(Map.of("message", "결제가 거절되었습니다 — 다른 결제 수단으로 재시도해 주세요"));
+            .body(new ErrorResponse("결제가 거절되었습니다 — 다른 결제 수단으로 재시도해 주세요"));
     }
 
     @ExceptionHandler(PaymentTimeoutException.class)
-    public ResponseEntity<Map<String, String>> handlePaymentTimeout(PaymentTimeoutException e) {
+    public ResponseEntity<ErrorResponse> handlePaymentTimeout(PaymentTimeoutException e) {
         log.warn("[PG_TIMEOUT] {}", e.getMessage());
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
-            .body(Map.of("message", "처리 중 — 잠시 후 결과 확인 부탁드립니다"));
+            .body(new ErrorResponse("처리 중 — 잠시 후 결과 확인 부탁드립니다"));
     }
 
     @ExceptionHandler(AccommodationNotFoundException.class)
-    public ResponseEntity<Map<String, String>> handleAccommodationNotFound(AccommodationNotFoundException e) {
+    public ResponseEntity<ErrorResponse> handleAccommodationNotFound(AccommodationNotFoundException e) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
-            .body(Map.of("message", "존재하지 않는 상품입니다"));
+            .body(new ErrorResponse("존재하지 않는 상품입니다"));
     }
 
     @ExceptionHandler(RedisUnavailableException.class)
-    public ResponseEntity<Map<String, String>> handleRedisUnavailable(RedisUnavailableException e) {
+    public ResponseEntity<ErrorResponse> handleRedisUnavailable(RedisUnavailableException e) {
         log.warn("[REDIS_FAIL_CLOSED] {}", e.getMessage());
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
-            .body(Map.of("message", "일시적 장애로 요청을 처리할 수 없습니다. 재시도 부탁드립니다."));
+            .body(new ErrorResponse("일시적 장애로 요청을 처리할 수 없습니다. 재시도 부탁드립니다."));
     }
 
     /**
@@ -94,31 +95,31 @@ public class GlobalExceptionHandler {
      * 이중 booking 0 보장. 503 으로 응답해 클라이언트 재시도 시 정합 결과 반환.
      */
     @ExceptionHandler(DataIntegrityViolationException.class)
-    public ResponseEntity<Map<String, String>> handleDataIntegrityViolation(DataIntegrityViolationException e) {
+    public ResponseEntity<ErrorResponse> handleDataIntegrityViolation(DataIntegrityViolationException e) {
         log.warn("[DB_UNIQUE_VIOLATION] {}", e.getMessage());
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
-            .body(Map.of("message", "일시적 충돌로 요청을 처리할 수 없습니다. 재시도 부탁드립니다."));
+            .body(new ErrorResponse("일시적 충돌로 요청을 처리할 수 없습니다. 재시도 부탁드립니다."));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
-    public ResponseEntity<Map<String, String>> handleValidation(MethodArgumentNotValidException e) {
+    public ResponseEntity<ErrorResponse> handleValidation(MethodArgumentNotValidException e) {
         String message = e.getBindingResult().getFieldErrors().stream()
             .findFirst()
             .map(err -> err.getField() + ": " + err.getDefaultMessage())
             .orElse("요청 데이터 검증 실패");
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-            .body(Map.of("message", message));
+            .body(new ErrorResponse(message));
     }
 
     @ExceptionHandler(MissingRequestHeaderException.class)
-    public ResponseEntity<Map<String, String>> handleMissingHeader(MissingRequestHeaderException e) {
+    public ResponseEntity<ErrorResponse> handleMissingHeader(MissingRequestHeaderException e) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-            .body(Map.of("message", "필수 헤더 누락: " + e.getHeaderName()));
+            .body(new ErrorResponse("필수 헤더 누락: " + e.getHeaderName()));
     }
 
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)
-    public ResponseEntity<Map<String, String>> handleTypeMismatch(MethodArgumentTypeMismatchException e) {
+    public ResponseEntity<ErrorResponse> handleTypeMismatch(MethodArgumentTypeMismatchException e) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-            .body(Map.of("message", "잘못된 형식: " + e.getName()));
+            .body(new ErrorResponse("잘못된 형식: " + e.getName()));
     }
 }

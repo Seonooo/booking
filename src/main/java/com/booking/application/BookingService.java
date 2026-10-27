@@ -11,10 +11,7 @@ import com.booking.domain.idempotency.IdempotencyStatus;
 import com.booking.domain.outbox.OutboxEvent;
 import com.booking.domain.outbox.OutboxEventRepository;
 import com.booking.domain.outbox.OutboxEventStatus;
-import com.booking.domain.payment.ExternalPaymentMethod;
-import com.booking.domain.payment.InvalidPaymentCompositionException;
 import com.booking.domain.payment.PaymentComposition;
-import com.booking.domain.payment.PaymentMethod;
 import com.booking.domain.payment.PaymentRequest;
 import com.booking.domain.payment.PaymentResult;
 import com.booking.domain.payment_attempt.PaymentAttempt;
@@ -34,12 +31,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
 import java.util.UUID;
-import java.util.function.Function;
-import java.util.stream.Collectors;
 
 /**
  * POST /booking 처리 흐름 (DECISIONS.md §11 / ADR-008 amendment / ADR-009 / ADR-010 / ADR-011).
@@ -87,7 +79,7 @@ public class BookingService {
     private final BookingRepository bookingRepository;
     private final PaymentAttemptRepository paymentAttemptRepository;
     private final OutboxEventRepository outboxEventRepository;
-    private final Map<String, PaymentMethod> paymentMethodsByType;
+    private final PaymentCompositionFactory paymentCompositionFactory;
     private final StockRepository stockRepository;
     private final SagaCompensationService sagaCompensationService;
     private final ObjectMapper objectMapper;
@@ -99,7 +91,7 @@ public class BookingService {
                           BookingRepository bookingRepository,
                           PaymentAttemptRepository paymentAttemptRepository,
                           OutboxEventRepository outboxEventRepository,
-                          List<PaymentMethod> paymentMethods,
+                          PaymentCompositionFactory paymentCompositionFactory,
                           StockRepository stockRepository,
                           SagaCompensationService sagaCompensationService,
                           ObjectMapper objectMapper,
@@ -110,9 +102,7 @@ public class BookingService {
         this.bookingRepository = bookingRepository;
         this.paymentAttemptRepository = paymentAttemptRepository;
         this.outboxEventRepository = outboxEventRepository;
-        // ADR-009 §4-4 OCP — Map lookup 으로 BookingService 가 결제 수단 추가에 닫힘
-        this.paymentMethodsByType = paymentMethods.stream()
-            .collect(Collectors.toMap(PaymentMethod::getMethodType, Function.identity()));
+        this.paymentCompositionFactory = paymentCompositionFactory;
         this.stockRepository = stockRepository;
         this.sagaCompensationService = sagaCompensationService;
         this.objectMapper = objectMapper;
@@ -137,8 +127,9 @@ public class BookingService {
             throw new StockSoldOutException();
         }
 
-        // 결제 수단 build + PaymentComposition 검증 (혼용 정책 — 외부 1개 초과 불가 invariant)
-        PaymentComposition composition = new PaymentComposition(buildPaymentMethods(request));
+        // 결제 수단 build + PaymentComposition 검증 (혼용 정책 — 외부 1개 초과 불가 invariant).
+        // SRP — PaymentCompositionFactory 가 paymentMethod String + points 분기 책임.
+        PaymentComposition composition = paymentCompositionFactory.create(request);
 
         // 단계 4 — booking HOLD + paymentAttempt INIT/REQUESTED + booking PG_PENDING (트랜잭션 1)
         BookingPgState state = persistInitialState(idempotencyKey, request);
@@ -183,27 +174,6 @@ public class BookingService {
         }
     }
 
-    /**
-     * paymentMethod 와 points 입력에 따라 PaymentComposition 의 methods List build.
-     * Map lookup 으로 BookingService 가 *결제 수단 추가에 닫힘* (ADR-009 §4-4 OCP).
-     */
-    private List<PaymentMethod> buildPaymentMethods(CreateBookingRequest request) {
-        String pmType = request.paymentMethod().toUpperCase();
-        PaymentMethod external = paymentMethodsByType.get(pmType);
-        if (!(external instanceof ExternalPaymentMethod)) {
-            throw new InvalidPaymentCompositionException("지원하지 않는 결제 수단: " + pmType);
-        }
-        List<PaymentMethod> methods = new ArrayList<>();
-        methods.add(external);
-        if (request.points() > 0) {
-            PaymentMethod point = paymentMethodsByType.get("POINT");
-            if (point == null) {
-                throw new InvalidPaymentCompositionException("포인트 결제 미설정 — 시스템 오류");
-            }
-            methods.add(point);
-        }
-        return methods;
-    }
 
     private BookingPgState persistInitialState(UUID idempotencyKey, CreateBookingRequest request) {
         return transactionTemplate.execute(status -> persistInitialStateTx(idempotencyKey, request));

@@ -4,6 +4,8 @@ import com.booking.domain.payment.ExternalPaymentMethod;
 import com.booking.domain.payment.PaymentRequest;
 import com.booking.domain.payment.PaymentResult;
 import com.booking.domain.payment.PaymentStatusResult;
+import com.booking.infrastructure.payment.dto.PgCancelRequest;
+import com.booking.infrastructure.payment.dto.PgPaymentRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -15,7 +17,6 @@ import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 
-import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 
@@ -54,10 +55,8 @@ public class CardPayment implements ExternalPaymentMethod {
 
     @Override
     public PaymentResult execute(PaymentRequest request) {
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("amount", request.amount().toPlainString());
-        body.put("idempotencyKey", request.idempotencyKey());
-        body.put("userId", request.userId());
+        PgPaymentRequest body = PgPaymentRequest.of(
+            request.amount(), request.idempotencyKey(), request.userId());
 
         try {
             @SuppressWarnings("unchecked")
@@ -92,9 +91,7 @@ public class CardPayment implements ExternalPaymentMethod {
      */
     @Override
     public void cancel(String paymentKey, long cancelAmount) {
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("externalPaymentId", paymentKey);
-        body.put("cancelAmount", cancelAmount);
+        PgCancelRequest body = new PgCancelRequest(paymentKey, cancelAmount);
         try {
             restTemplate.postForObject(pgUrl + "/payment/cancel", body, Map.class);
             log.info("[PG_CANCEL_OK] externalPaymentId={} cancelAmount={}", paymentKey, cancelAmount);
